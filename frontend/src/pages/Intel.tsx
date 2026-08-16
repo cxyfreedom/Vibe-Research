@@ -1,25 +1,149 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { TrendingUp, FileText, Newspaper, Rss, RefreshCw, Loader2, ExternalLink, AlertCircle, Sparkles, Lightbulb, Star } from "lucide-react";
+import { FileText, Newspaper, Rss, RefreshCw, Loader2, ExternalLink, AlertCircle, Sparkles, Lightbulb, Star, CalendarDays, ChevronDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
-import { api, ApiError, type RadarData, type Industry, type Announcement, type NewsItem } from "@/lib/api";
+import { api, ApiError, type RadarData, type Industry, type Announcement, type NewsItem, type MarketNewsData } from "@/lib/api";
 import { loadWatch } from "@/lib/watchlist";
 import { hasLlm, chatStream } from "@/lib/llm";
 import { cn } from "@/lib/utils";
 
 const TABS = [
-  { key: "events", label: "事件概率", icon: TrendingUp, integrated: false, desc: "全球宏观预期概率（公开数据、免登录只读），后续接入" },
+  { key: "market-news", label: "财经资讯", icon: Newspaper, integrated: true, desc: "东财、同花顺、财联社实时财经资讯" },
   { key: "filings", label: "A股公告", icon: FileText, integrated: false, desc: "汇总关注列表里各个股的近期公告（东财公开披露）" },
   { key: "news", label: "公开新闻", icon: Newspaper, integrated: false, desc: "汇总关注列表里各个股的近期新闻（公开源）" },
   { key: "investment-news", label: "Investment News", icon: Rss, integrated: true, desc: "12 赛道全球公开 RSS 资讯（集成自 investment-news 仓库）" },
 ];
 
 interface Digest { loading?: boolean; text?: string; err?: string; needKey?: boolean }
+
+const NEWS_SOURCES = [
+  { key: "all", label: "全部", active: "border-primary bg-primary/15 text-primary shadow-glow", idle: "border-primary/25 hover:border-primary/60" },
+  { key: "em", label: "东方财富", active: "border-warning/60 bg-warning/15 text-warning", idle: "border-warning/30 text-warning/80 hover:border-warning/60" },
+  { key: "ths", label: "同花顺", active: "border-sky-400/60 bg-sky-400/15 text-sky-400", idle: "border-sky-400/30 text-sky-400/80 hover:border-sky-400/60" },
+  { key: "cls", label: "财联社", active: "border-danger/60 bg-danger/15 text-danger", idle: "border-danger/30 text-danger/80 hover:border-danger/60" },
+] as const;
+
+const NEWS_SOURCE_BADGES: Record<string, string> = {
+  em: "border-warning/30 bg-warning/10 text-warning",
+  ths: "border-sky-400/30 bg-sky-400/10 text-sky-400",
+  cls: "border-danger/30 bg-danger/10 text-danger",
+};
+
+function MarketNewsPanel() {
+  const [source, setSource] = useState("all");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [availableDates, setAvailableDates] = useState<string[]>([]);
+  const [fromOpen, setFromOpen] = useState(false);
+  const [toOpen, setToOpen] = useState(false);
+  const [data, setData] = useState<MarketNewsData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [digest, setDigest] = useState<Digest>({});
+
+  const load = useCallback(async (nextSource = source, nextFrom = fromDate, nextTo = toDate) => {
+    setLoading(true); setErr(null);
+    try { setData(await api.marketNews(nextSource, nextFrom, nextTo)); }
+    catch (e) { setErr(e instanceof ApiError ? e.message : "加载失败"); }
+    finally { setLoading(false); }
+  }, [source, fromDate, toDate]);
+
+  useEffect(() => {
+    void load(source);
+    api.marketNewsDates(source).then(setAvailableDates).catch(() => setAvailableDates([]));
+  }, [source]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const refresh = async () => {
+    setRefreshing(true); setErr(null);
+    try { await api.marketNewsRefresh(); await load(source); }
+    catch (e) { setErr(e instanceof ApiError ? e.message : "实时刷新失败"); }
+    finally { setRefreshing(false); }
+  };
+
+  const genDigest = async () => {
+    if (!hasLlm()) { setDigest({ needKey: true }); return; }
+    const rows = data?.items || [];
+    setDigest({ loading: true });
+    const ctx = rows.slice(0, 50).map((it) => `[${it.pub_time}] ${NEWS_SOURCES.find((s) => s.key === it.source)?.label || it.source}｜${it.title}\n${it.summary}`).join("\n");
+    const label = NEWS_SOURCES.find((s) => s.key === source)?.label || "全部";
+    const prompt = `以下是「${label}」近期财经资讯。请提炼今日要点 3-5 条，每条一句话（≤40 字）；只陈述重要事件和影响线索，不推荐标的、不预测涨跌。直接用「- 」列点。\n\n${ctx}`;
+    try {
+      let acc = "";
+      await chatStream([{ role: "user", content: prompt }], `${label}财经资讯`, {
+        onDelta: (text) => { acc += text; setDigest({ text: acc }); },
+      });
+    } catch (e) { setDigest({ err: e instanceof ApiError ? e.message : "生成失败" }); }
+  };
+
+  const countOf = (key: string) => key === "all" ? data?.sources.reduce((n, s) => n + s.count, 0) : data?.sources.find((s) => s.source === key)?.count;
+
+  return <div>
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap gap-2">
+        {NEWS_SOURCES.map((item) => <button key={item.key} onClick={() => { setSource(item.key); setDigest({}); }}
+          className={cn("rounded-full border px-3 py-1 text-xs transition-colors", source === item.key ? cn("font-medium", item.active) : item.idle)}>
+          {item.label}{countOf(item.key) ? ` ${countOf(item.key)}` : ""}
+        </button>)}
+      </div>
+      <button onClick={refresh} disabled={refreshing || loading}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50">
+        {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}{refreshing ? "采集入库中…" : "实时刷新"}
+      </button>
+    </div>
+
+    <div className="relative z-40 mb-4 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <div className="relative">
+        <button type="button" onClick={() => { setFromOpen((open) => !open); setToOpen(false); }}
+          className="inline-flex min-w-32 items-center justify-between gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-foreground">
+          <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />{fromDate || "开始日期"}<ChevronDown className="h-3.5 w-3.5" />
+        </button>
+        {fromOpen && <div className="absolute left-0 top-full z-50 mt-1 max-h-64 min-w-full overflow-y-auto rounded-lg border border-border bg-card p-1 shadow-xl">
+          {availableDates.map((date) => <button key={date} type="button" onClick={() => { setFromDate(date); setFromOpen(false); }} className="block w-full whitespace-nowrap rounded px-3 py-1.5 text-left text-foreground hover:bg-muted">{date}</button>)}
+        </div>}
+      </div>
+      <span>至</span>
+      <div className="relative">
+        <button type="button" onClick={() => { setToOpen((open) => !open); setFromOpen(false); }}
+          className="inline-flex min-w-32 items-center justify-between gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-foreground">
+          <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />{toDate || "结束日期"}<ChevronDown className="h-3.5 w-3.5" />
+        </button>
+        {toOpen && <div className="absolute left-0 top-full z-50 mt-1 max-h-64 min-w-full overflow-y-auto rounded-lg border border-border bg-card p-1 shadow-xl">
+          {availableDates.map((date) => <button key={date} type="button" onClick={() => { setToDate(date); setToOpen(false); }} className="block w-full whitespace-nowrap rounded px-3 py-1.5 text-left text-foreground hover:bg-muted">{date}</button>)}
+        </div>}
+      </div>
+      <button onClick={() => void load(source)} className="rounded-lg bg-primary/15 px-3 py-1.5 font-medium text-primary">查询</button>
+      {(fromDate || toDate) && <button onClick={() => { setFromDate(""); setToDate(""); void load(source, "", ""); }} className="px-2 py-1.5 hover:text-foreground">清空</button>}
+      <span className="ml-auto">当前条件共 {data?.total || 0} 条，展示最新 {data?.items.length || 0} 条</span>
+    </div>
+
+    {err && <div className="mb-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"><AlertCircle className="h-4 w-4" />{err}</div>}
+
+    <div className="mb-4 rounded-xl border border-primary/30 bg-primary/5 p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="flex items-center gap-1.5 text-sm font-semibold text-primary"><Lightbulb className="h-4 w-4" />今日要点 · {NEWS_SOURCES.find((s) => s.key === source)?.label}</span>
+        <button onClick={genDigest} disabled={loading || !data?.items.length} className="inline-flex items-center gap-1.5 text-xs text-primary disabled:opacity-50"><Sparkles className="h-3.5 w-3.5" />{digest.text ? "重新提炼" : "AI 提炼"}</button>
+      </div>
+      {digest.loading ? <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />AI 正在阅读资讯…</p>
+        : digest.text ? <><div className="prose prose-sm dark:prose-invert max-w-none"><ReactMarkdown remarkPlugins={[remarkGfm]}>{digest.text}</ReactMarkdown></div><div className="mt-2"><SaveNoteButton kind="今日要点" title="财经资讯今日要点" content={digest.text} /></div></>
+        : digest.needKey ? <p className="text-sm text-muted-foreground">还没接入 AI。<Link to="/settings" className="text-primary">先接入你的 AI</Link>。</p>
+        : digest.err ? <p className="text-sm text-destructive">{digest.err}</p>
+        : <p className="text-sm text-muted-foreground">从当前来源和日期范围的最新资讯中提炼要点。</p>}
+    </div>
+
+    {loading && !data ? <p className="flex justify-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />加载资讯…</p>
+      : !data?.items.length ? <p className="py-8 text-center text-sm text-muted-foreground">当前条件暂无资讯</p>
+      : <div className="space-y-2">{data.items.map((it, i) => <a key={`${it.source}|${it.title}|${i}`} href={it.link || undefined} target={it.link ? "_blank" : undefined} rel="noreferrer" className="group block border-b border-border/30 pb-3 text-sm last:border-0">
+        <div className="flex items-baseline gap-3"><span className="w-32 shrink-0 font-mono text-xs text-muted-foreground/70">{it.pub_time}</span><span className={cn("w-16 shrink-0 rounded border px-1.5 py-0.5 text-center text-xs", NEWS_SOURCE_BADGES[it.source] || "border-border bg-muted text-muted-foreground")}>{NEWS_SOURCES.find((s) => s.key === it.source)?.label || it.source}</span><span className="flex-1 font-medium group-hover:text-primary">{it.title}</span>{it.link && <ExternalLink className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-60" />}</div>
+        {it.summary && <p className="mt-1 pl-0 text-xs leading-5 text-muted-foreground sm:pl-52">{it.summary}</p>}
+      </a>)}</div>}
+  </div>;
+}
 
 function InvestmentNewsPanel() {
   const [data, setData] = useState<RadarData | null>(null);
@@ -298,7 +422,7 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
 }
 
 export function Intel() {
-  const [tab, setTab] = useState("investment-news");
+  const [tab, setTab] = useState("market-news");
   const cur = TABS.find((t) => t.key === tab)!;
 
   return (
@@ -320,9 +444,11 @@ export function Intel() {
         <div className="mb-3 flex items-center gap-2">
           <cur.icon className="h-5 w-5 text-primary" />
           <h3 className="font-semibold">{cur.label}</h3>
-          {cur.integrated && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">investment-news</span>}
+          {cur.integrated && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">已整合</span>}
         </div>
-        {cur.key === "investment-news" ? (
+        {cur.key === "market-news" ? (
+          <MarketNewsPanel />
+        ) : cur.key === "investment-news" ? (
           <InvestmentNewsPanel />
         ) : cur.key === "filings" ? (
           <WatchlistFeed kind="filings" />

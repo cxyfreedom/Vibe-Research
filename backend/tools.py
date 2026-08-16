@@ -17,6 +17,7 @@ import astock
 import gstock
 import market
 import newsradar
+import market_store
 
 # ——— schema 简写：让 20+ 个工具定义保持一屏可读 ———
 
@@ -93,13 +94,21 @@ TOOLS: list[dict] = [
 
     # —— 市场层 ——
     _t("query_market",
-       "查大盘与市场情绪。scope: indices=A股指数 / global=全球指数 / emotion=短线情绪(连板梯队/封板率) / turnover=全市场成交额 TOP20 / overview=大盘总览(指数+情绪+板块资金流)。",
+       "查大盘与市场情绪。scope: indices=A股指数 / global=全球指数 / emotion=短线情绪(连板梯队/封板率) / turnover=全市场成交额 TOP50 / overview=大盘总览(指数+情绪+板块资金流)。",
        {"scope": {"type": "string", "enum": ["indices", "global", "emotion", "turnover", "overview"],
                   "description": "要查的范围，默认 overview"}}),
     _t("query_news_radar",
        "查资讯雷达：12 条赛道的行业资讯聚合（非个股新闻，看产业面动态用）。可传 track 只看某条赛道（如「半导体」「AI」）。",
        {"track": {"type": "string", "description": "赛道名关键词，留空看全部"},
         "per_track": {"type": "integer", "description": "每条赛道取最新几条，默认 5"}}),
+
+    # —— 本地市场历史（需 PostgreSQL）——
+    _t("query_market_history",
+       "查本地持续采集的市场快照：每日复盘、热榜、盘中/多日板块资金、行情池、技术扫描、全市场龙虎榜或财经快讯。返回来源和采集时间。",
+       {"kind": {"type": "string", "enum": ["daily_review", "hot", "fund_flow", "fund_flow_daily", "market_pool", "tech_rank", "lhb", "news_feed"]},
+        "source": {"type": "string", "description": "可选来源，如 em/ths/legu/eastmoney"},
+        "scope": {"type": "string", "description": "可选范围，如 zt、industry:live、cxg:创月新高"}},
+       ["kind"]),
 
     # —— 海外 ——
     _t("query_global_stock",
@@ -346,6 +355,21 @@ def _radar(args: dict):
             "tracks": [i.get("name") for i in (d.get("industries") or [])], "items": out}
 
 
+def _market_history(args: dict):
+    if not market_store.enabled():
+        return {"error": "未配置 VR_DATABASE_URL，市场历史库未启用"}
+    row = market_store.latest_snapshot(str(args.get("kind") or ""), str(args.get("source") or ""),
+                                       str(args.get("scope") or ""))
+    if not row:
+        return {"error": "没有匹配的市场历史快照"}
+    payload = row.get("payload")
+    if isinstance(payload, list):
+        payload = payload[:50]
+    return {"dataset": row.get("dataset"), "source": row.get("source"), "scope": row.get("scope"),
+            "trade_date": str(row.get("trade_date")), "collected_at": str(row.get("collected_at")),
+            "items": payload}
+
+
 # name -> 执行函数。绝大多数是「调后端函数 + 裁剪」，复杂的抽成上面的私有函数。
 _HANDLERS = {
     "query_quote": lambda a: astock.tencent_quote([str(c) for c in a.get("codes", [])]),
@@ -375,6 +399,7 @@ _HANDLERS = {
         ("title", "publishDate", "orgSName", "industryName"), 20),
     "query_market": _market,
     "query_news_radar": _radar,
+    "query_market_history": _market_history,
     "query_global_stock": lambda a: gstock.us_hk_stock(str(a.get("symbol", ""))) or {"error": "未找到该美股/港股/韩股代码"},
     "query_hk_cashflow": lambda a: gstock.hk_cashflow(str(a.get("symbol", ""))) or {"error": "未找到该港股现金流（仅港股支持）"},
 }

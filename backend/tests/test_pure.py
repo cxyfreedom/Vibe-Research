@@ -54,3 +54,8 @@ def test_parse_gtimg_bad_line_ignored():
     # 字段不足 / 无引号的行应被安全跳过，不抛异常。
     assert astock._parse_gtimg("garbage;no_quotes_here;") == {}
     assert astock._parse_gtimg("") == {}
+
+
+def test_new_beijing_exchange_92_prefix():
+    assert astock.get_prefix("920001") == "bj"
+    assert astock.get_prefix("830001") == "bj"

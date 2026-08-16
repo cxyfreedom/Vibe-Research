@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: vibe-research-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${VR_POSTGRES_DB:-vibe_research}
+      POSTGRES_USER: ${VR_POSTGRES_USER:-vibe}
+      POSTGRES_PASSWORD: ${VR_POSTGRES_PASSWORD:-vibe-local-only}
+    ports:
+      - "127.0.0.1:${VR_POSTGRES_PORT:-54329}:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: vibe-research-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      VR_DATABASE_URL: postgresql://${VR_POSTGRES_USER:-vibe}:${VR_POSTGRES_PASSWORD:-vibe-local-only}@postgres:5432/${VR_POSTGRES_DB:-vibe_research}
+      VR_DATA_DIR: /workspace/data/user
+      VR_REPORTS_DIR: /workspace/data/user/myreports
+      VR_COLLECTOR_ENABLED: ${VR_COLLECTOR_ENABLED:-1}
+      VR_NEWS_SOURCE_TIMEOUT: ${VR_NEWS_SOURCE_TIMEOUT:-45}
+      VR_NEWS_INTERVAL: ${VR_NEWS_INTERVAL:-60}
+      VR_HOT_INTERVAL: ${VR_HOT_INTERVAL:-1800}
+      VR_REALTIME_INTERVAL: ${VR_REALTIME_INTERVAL:-60}
+      VR_FUND_FLOW_RETENTION_DAYS: ${VR_FUND_FLOW_RETENTION_DAYS:-90}
+      VR_EM_MIN_INTERVAL: ${VR_EM_MIN_INTERVAL:-0.25}
+      VR_STOCK_COLLECT_WORKERS: ${VR_STOCK_COLLECT_WORKERS:-4}
+      VR_STOCK_COLLECT_DELAY: ${VR_STOCK_COLLECT_DELAY:-0.05}
+    ports:
+      - "127.0.0.1:${VR_BACKEND_PORT:-8900}:8900"
+    volumes:
+      - ./backend:/workspace/backend
+      - ./frontend/package.json:/workspace/frontend/package.json:ro
+      - ./data:/workspace/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8900/api/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    container_name: vibe-research-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      VITE_API_URL: http://backend:8900
+      CHOKIDAR_USEPOLLING: "true"
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "127.0.0.1:${VR_FRONTEND_PORT:-5899}:5899"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+
+volumes:
+  frontend_node_modules:

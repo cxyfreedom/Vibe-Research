@@ -10,6 +10,8 @@ VibeResearch-专业化建议.md
 my-watchlist.json
 portfolio.json
 public/user-data/
+data/*
+!data/.gitkeep
 
 # ── 密钥 / 环境（绝不进仓库） ──────────────────────────────────────
 .env

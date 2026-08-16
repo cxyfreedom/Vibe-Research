@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import time
+
 import astock
 
 _UA_H = {"User-Agent": astock.UA}
@@ -91,6 +93,122 @@ def global_indices() -> list[dict]:
             "change_pct": round(chg / 100, 2) if isinstance(chg, (int, float)) else None,
         })
     return out
+
+
+def _index_daily_rows_sina(secid: str, end_date: str) -> list[dict]:
+    """Sina history fallback exposed through AkShare."""
+    ak = astock._akshare()
+    symbols = {
+        "100.DJIA": (ak.index_us_stock_sina, ".DJI"),
+        "100.SPX": (ak.index_us_stock_sina, ".INX"),
+        "100.NDX": (ak.index_us_stock_sina, ".IXIC"),
+        "100.HSI": (ak.stock_hk_index_daily_sina, "HSI"),
+        "124.HSTECH": (ak.stock_hk_index_daily_sina, "HSTECH"),
+    }
+    if secid not in symbols:
+        raise RuntimeError(f"未知全球指数：{secid}")
+    fetch, symbol = symbols[secid]
+    frame = fetch(symbol=symbol)
+    values = []
+    for _, row in frame.iterrows():
+        day = str(row.get("date"))[:10]
+        if day and day <= end_date:
+            values.append((day, float(row.get("close"))))
+    values.sort()
+    rows = []
+    for position, (day, close) in enumerate(values):
+        if position == 0 or values[position - 1][1] == 0:
+            continue
+        previous = values[position - 1][1]
+        rows.append({
+            "date": day, "price": round(close, 2),
+            "change_pct": round((close - previous) / previous * 100, 2),
+        })
+    if not rows:
+        raise RuntimeError(f"新浪全球指数历史数据为空：{secid}")
+    return rows
+
+
+def _index_daily_rows(secid: str, end_date: str, limit: int = 60) -> list[dict]:
+    """Return normalized daily closes for one global index."""
+    import requests
+
+    params = {
+            "secid": secid, "klt": "101", "fqt": "1", "lmt": str(limit),
+            "end": end_date.replace("-", ""),
+            "ut": "fa5fd1943c7b386f172d6893dbfba10b",
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+    }
+    session = requests.Session()
+    session.trust_env = False
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = session.get(
+                "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+                params=params, headers=_UA_H, timeout=15,
+            )
+            response.raise_for_status()
+            break
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < 1:
+                time.sleep(1.5 * (2 ** attempt))
+    else:
+        return _index_daily_rows_sina(secid, end_date)
+    data = response.json().get("data")
+    if not data:
+        raise RuntimeError(f"全球指数历史数据为空：{secid}")
+    rows = []
+    for raw in data.get("klines") or []:
+        parts = raw.split(",")
+        if len(parts) < 9:
+            continue
+        try:
+            rows.append({
+                "date": parts[0],
+                "price": round(float(parts[2]), 2),
+                "change_pct": round(float(parts[8]), 2),
+            })
+        except (TypeError, ValueError):
+            continue
+    if not rows:
+        raise RuntimeError(f"全球指数历史数据无法解析：{secid}")
+    return rows
+
+
+def global_indices_for_dates(trade_dates: list[str]) -> dict[str, list[dict]]:
+    """Map historical closes to A-share review dates.
+
+    US indices use the latest close strictly before the A-share date; Hong Kong
+    indices use the same date when available, otherwise the latest prior close.
+    """
+    targets = sorted({str(value)[:10] for value in trade_dates if value})
+    if not targets:
+        return {}
+    series = {}
+    for position, idx in enumerate(_INDICES):
+        if position:
+            time.sleep(1)
+        series[idx["key"]] = _index_daily_rows(
+            idx["secid"], targets[-1], max(60, len(targets) * 4),
+        )
+    result: dict[str, list[dict]] = {target: [] for target in targets}
+    for target in targets:
+        for idx in _INDICES:
+            candidates = [
+                row for row in series[idx["key"]]
+                if row["date"] < target or (idx["region"] == "港股" and row["date"] == target)
+            ]
+            if not candidates:
+                continue
+            selected = max(candidates, key=lambda row: row["date"])
+            result[target].append({
+                "key": idx["key"], "name": idx["name"], "region": idx["region"],
+                "price": selected["price"], "change_pct": selected["change_pct"],
+            })
+    return result
 
 
 class SearchUnavailable(RuntimeError):

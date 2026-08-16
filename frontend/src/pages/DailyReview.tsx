@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { Sparkles, Loader2, AlertCircle, RefreshCw, Gauge, ArrowDownUp, TrendingUp, TrendingDown, Plus, X, Flame, BarChart3, Globe } from "lucide-react";
+import { Sparkles, Loader2, AlertCircle, RefreshCw, Gauge, ArrowDownUp, TrendingUp, TrendingDown, Plus, X, Flame, BarChart3, Globe, CalendarDays, ChevronDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -30,6 +30,12 @@ export function DailyReview() {
   const [emotion, setEmotion] = useState<ShortTermEmotion | null>(null);
   const [turnover, setTurnover] = useState<TurnoverTop | null>(null);
   const [globalIdx, setGlobalIdx] = useState<GlobalIndex[]>([]);
+  const [availableDates, setAvailableDates] = useState<string[]>([]);
+  const [selectedDate, setSelectedDate] = useState("");
+  const [snapshotDate, setSnapshotDate] = useState("");
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [dateOpen, setDateOpen] = useState(false);
+  const [activity, setActivity] = useState<Record<string, unknown>>({});
   // 关注股票（自选，存本地）
   const [watchCodes, setWatchCodes] = useState<string[]>(loadWatch);
   const [watchQuotes, setWatchQuotes] = useState<Record<string, Quote>>({});
@@ -41,18 +47,47 @@ export function DailyReview() {
   const [emoDone, setEmoDone] = useState(false);
   const [toDone, setToDone] = useState(false);
 
-  const loadIndices = () => {
-    api.indices().then(setIndices).catch(() => setIdxErr(true));
-    api.globalIndices().then(setGlobalIdx).catch(() => {});
-    api.marketOverview().then(setOverview).catch(() => {}).finally(() => setOvDone(true));
-    api.emotion().then(setEmotion).catch(() => {}).finally(() => setEmoDone(true));
-    api.turnoverTop().then(setTurnover).catch(() => {}).finally(() => setToDone(true));
+  const loadReviewData = (date = "") => {
+    setHistoryLoading(true);
+    setIdxErr(false);
+    setOvDone(false); setEmoDone(false); setToDone(false);
+    api.dailyReview(date).then((data) => {
+      setIndices(data.indices || []);
+      setGlobalIdx(data.global_indices || []);
+      setOverview(data.overview || null);
+      setEmotion(data.emotion || null);
+      setTurnover(data.turnover || null);
+      setActivity(data.activity || {});
+      setSnapshotDate(data.date || date);
+      setIdxErr((data.indices || []).length === 0);
+    }).catch(() => {
+      setIndices([]); setGlobalIdx([]); setOverview(null); setEmotion(null); setTurnover(null); setActivity({});
+      setIdxErr(true);
+    }).finally(() => {
+      setOvDone(true); setEmoDone(true); setToDone(true); setHistoryLoading(false);
+    });
+  };
+
+  const refreshReviewData = () => {
+    if (selectedDate) { loadReviewData(selectedDate); return; }
+    setHistoryLoading(true);
+    setIdxErr(false);
+    api.dailyReviewRefresh().then((data) => {
+      setIndices(data.indices || []); setGlobalIdx(data.global_indices || []);
+      setOverview(data.overview || null); setEmotion(data.emotion || null);
+      setTurnover(data.turnover || null); setActivity(data.activity || {});
+      setSnapshotDate(data.date || "");
+      setIdxErr((data.indices || []).length === 0);
+      return api.dailyReviewDates().then(setAvailableDates);
+    }).catch(() => setIdxErr(true)).finally(() => {
+      setOvDone(true); setEmoDone(true); setToDone(true); setHistoryLoading(false);
+    });
   };
 
   // 数据块占位：请求没回来 = 加载中；回来了但为空 = 数据源暂不可用（别让用户干等）
   const pending = (done: boolean) => (
     <p className="py-4 text-center text-sm text-muted-foreground/60">
-      {done ? "暂无数据：可能是非交易时段或数据源暂时不可用，可点「大盘指数」旁的刷新重试" : "加载中…"}
+      {done ? (selectedDate ? "该交易日没有保存这项历史数据" : "暂无数据：可能是非交易时段或数据源暂时不可用，可点「大盘指数」旁的刷新重试") : "加载中…"}
     </p>
   );
 
@@ -63,7 +98,8 @@ export function DailyReview() {
   };
 
   useEffect(() => {
-    loadIndices();
+    loadReviewData();
+    api.dailyReviewDates().then(setAvailableDates).catch(() => {});
     refreshWatch(loadWatch());
   }, []);
 
@@ -81,10 +117,25 @@ export function DailyReview() {
   };
 
   const today = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+  const reviewDate = snapshotDate || today;
+  const activityNumber = (key: string) => {
+    const value = activity[key];
+    const parsed = typeof value === "string" ? Number(value.replace("%", "")) : Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const riseBands = [
+    ["0～3%", "up_0_3", "down_0_3"], ["3～5%", "up_3_5", "down_3_5"],
+    ["5～7%", "up_5_7", "down_5_7"], ["7～10%", "up_7_10", "down_7_10"],
+    ["10～20%", "up_10_20", "down_10_20"],
+  ] as const;
+  const hasRiseBands = riseBands.some(([, up, down]) => activityNumber(up) !== null || activityNumber(down) !== null);
 
-  const dataSummary = indices.length
-    ? indices.map((i) => `${i.name} ${i.price}（${i.change_pct > 0 ? "+" : ""}${i.change_pct}%）`).join("；")
-    : "（指数数据未取到）";
+  const dataSummary = [
+    indices.length ? indices.map((i) => `${i.name} ${i.price}（${i.change_pct > 0 ? "+" : ""}${i.change_pct}%）`).join("；") : "指数数据未保存",
+    overview?.sentiment ? `上涨 ${overview.sentiment.up} 家、下跌 ${overview.sentiment.down} 家、涨停 ${overview.sentiment.zt} 家、跌停 ${overview.sentiment.dt} 家` : "市场情绪未保存",
+    emotion ? `连板 ${emotion.lianban_count} 家、最高 ${emotion.max_boards} 板、炸板 ${emotion.zb_count} 家` : "短线情绪未保存",
+    overview?.sectors?.length ? `行业资金流入前三：${overview.sectors.slice(0, 3).map((s) => s.name).join("、")}` : "板块资金未保存",
+  ].join("；");
 
   const runReview = async () => {
     setReviewErr(null);
@@ -93,8 +144,8 @@ export function DailyReview() {
     setReviewLoading(true);
     setReview("");
     const prompt =
-      `以下是今天 A 股大盘的客观数据：\n${dataSummary}\n\n` +
-      "请用中文做一段当天大盘复盘：整体涨跌、主要指数表现、盘面值得注意的点。" +
+      `以下是 ${reviewDate} A 股市场的客观数据：\n${dataSummary}\n\n` +
+      "请用中文做一段该交易日的大盘复盘：整体涨跌、主要指数表现、市场情绪、板块资金和盘面值得注意的点。" +
       "只做客观陈述与多视角分析，不预测涨跌、不推荐任何标的、不构成投资建议。";
     try {
       await chatStream([{ role: "user", content: prompt }], `今日大盘数据：${dataSummary}`, {
@@ -124,26 +175,43 @@ export function DailyReview() {
     <div>
       <PageHeader
         title="每日复盘"
-        subtitle={`${today} · 大盘 / 情绪 / 板块资金一屏看全，交给你的 AI 做复盘`}
+        subtitle={`${reviewDate} · 大盘 / 情绪 / 板块资金一屏看全，交给你的 AI 做复盘`}
         actions={
-          <AskAiButton
-            context={`今日大盘数据：${dataSummary}`}
-            label="问 AI"
-            suggestions={["今天大盘怎么走", "哪些指数领涨领跌", "盘面有什么值得注意"]}
-          />
+          <div className="relative z-50 flex items-center gap-2">
+            <div className="relative">
+              <button type="button" disabled={historyLoading} aria-haspopup="listbox" aria-expanded={dateOpen}
+                onClick={() => setDateOpen((open) => !open)}
+                className="inline-flex min-w-36 items-center justify-between gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm text-foreground outline-none transition-colors hover:border-primary/40 focus:border-primary/60 disabled:opacity-50">
+                <span className="inline-flex items-center gap-2"><CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />{selectedDate || "最新数据"}</span>
+                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+              </button>
+              {dateOpen && <div role="listbox" className="absolute right-0 z-50 mt-1 max-h-64 min-w-36 overflow-y-auto rounded-lg border border-border bg-card p-1 text-sm text-card-foreground shadow-2xl ring-1 ring-black/40">
+                {["", ...availableDates].map((date) => <button key={date || "latest"} type="button" role="option" aria-selected={selectedDate === date}
+                  onClick={() => { setDateOpen(false); setSelectedDate(date); setReview(""); loadReviewData(date); }}
+                  className={cn("block w-full rounded-md px-3 py-2 text-left transition-colors hover:bg-muted", selectedDate === date && "bg-primary/15 text-primary")}>
+                  {date || "最新数据"}
+                </button>)}
+              </div>}
+            </div>
+            <AskAiButton
+              context={`${reviewDate} 市场数据：${dataSummary}`}
+              label="问 AI"
+              suggestions={["当天大盘怎么走", "哪些指数领涨领跌", "盘面有什么值得注意"]}
+            />
+          </div>
         }
       />
 
       {/* 1. 大盘指数（实时） */}
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-muted-foreground">大盘指数</h3>
-        <button onClick={loadIndices} className="text-muted-foreground hover:text-primary" title="刷新"><RefreshCw className="h-3.5 w-3.5" /></button>
+        <button onClick={refreshReviewData} disabled={historyLoading} className="text-muted-foreground hover:text-primary disabled:opacity-50" title={selectedDate ? "重新读取历史快照" : "抓取最新数据并更新快照"}><RefreshCw className={cn("h-3.5 w-3.5", historyLoading && "animate-spin")} /></button>
       </div>
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
         {indices.length === 0
           ? [1, 2, 3, 4].map((i) => (
               <GlassCard key={i} className="p-3">
-                <p className="text-xs text-muted-foreground">{idxErr ? "行情未接通" : "加载中…"}</p>
+                <p className="text-xs text-muted-foreground">{idxErr ? (selectedDate ? "历史未保存" : "行情未接通") : "加载中…"}</p>
                 <p className="mt-1 font-mono text-lg font-bold text-muted-foreground/40">—</p>
               </GlassCard>
             ))
@@ -179,7 +247,7 @@ export function DailyReview() {
 
       {/* 2. 关注股票（自选） */}
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-muted-foreground">关注股票</h3>
+        <h3 className="text-sm font-semibold text-muted-foreground">关注股票（实时）</h3>
         {watchCodes.length > 0 && (
           <button onClick={() => refreshWatch(watchCodes)} className="text-muted-foreground hover:text-primary" title="刷新价格">
             {watchLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
@@ -227,11 +295,11 @@ export function DailyReview() {
       {/* 3. AI 当日复盘 */}
       <GlassCard glow className="mb-6">
         <div className="flex items-center justify-between">
-          <h3 className="flex items-center gap-1.5 font-semibold"><Sparkles className="h-4 w-4 text-primary" /> AI 当日复盘</h3>
+          <h3 className="flex items-center gap-1.5 font-semibold"><Sparkles className="h-4 w-4 text-primary" /> AI 交易日复盘</h3>
           <button onClick={runReview} disabled={reviewLoading}
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary shadow-glow hover:bg-primary/25 disabled:opacity-50">
             {reviewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            {review ? "重新复盘" : "让 AI 复盘今天"}
+            {review ? "重新复盘" : "让 AI 复盘所选日期"}
           </button>
         </div>
         {needConfig && (
@@ -248,7 +316,7 @@ export function DailyReview() {
         {review ? (
           <>
             <div className="prose prose-sm dark:prose-invert mt-4 max-w-none text-foreground"><ReactMarkdown remarkPlugins={[remarkGfm]}>{review}</ReactMarkdown></div>
-            {!reviewLoading && <div className="mt-3"><SaveNoteButton kind="复盘" title={`每日复盘 ${today}`} content={review} /></div>}
+            {!reviewLoading && <div className="mt-3"><SaveNoteButton kind="复盘" title={`每日复盘 ${reviewDate}`} content={review} /></div>}
           </>
         ) : !needConfig && !reviewErr && !reviewLoading ? (
           <p className="mt-3 text-sm text-muted-foreground">点上方按钮，系统把当天客观数据打包给你的 AI，由它生成复盘。<b className="text-foreground">分析是它给的，我们只负责喂数据。</b></p>
@@ -285,6 +353,18 @@ export function DailyReview() {
                 </div>
               ))}
             </div>
+            {(hasRiseBands || activityNumber("paused_count") !== null) && <div className="mt-4 border-t border-border/40 pt-3">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <p className="text-xs font-medium text-muted-foreground">涨跌分布</p>
+                {activityNumber("paused_count") !== null && <span className="rounded-md bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">停牌 {activityNumber("paused_count")}</span>}
+              </div>
+              {hasRiseBands && <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                {riseBands.map(([label, upKey, downKey]) => <div key={label} className="rounded-lg bg-muted/20 p-2 text-center">
+                  <p className="text-[10px] text-muted-foreground">涨跌 {label}</p>
+                  <p className="mt-1 font-mono text-xs"><span className="text-danger">↑ {activityNumber(upKey) ?? "—"}</span><span className="mx-1 text-muted-foreground/30">/</span><span className="text-success">↓ {activityNumber(downKey) ?? "—"}</span></p>
+                </div>)}
+              </div>}
+            </div>}
           </>
         )}
       </GlassCard>
@@ -351,7 +431,7 @@ export function DailyReview() {
                           <td className="px-2 py-2"><span className="font-medium">{s.name}</span> <span className="text-xs text-muted-foreground/50">{s.code}</span></td>
                           <td className="whitespace-nowrap px-2 py-2 font-mono font-bold text-primary">{s.boards} 板</td>
                           <td className="px-2 py-2 font-mono">{s.price}</td>
-                          <td className="px-2 py-2 font-mono text-danger">+{s.pct}%</td>
+                          <td className="px-2 py-2 font-mono text-danger">+{s.pct.toFixed(2)}%</td>
                           <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yi(s.amount)}</td>
                           <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yi(s.float_cap)}</td>
                           <td className="whitespace-nowrap px-2 py-2 text-xs text-muted-foreground">{s.industry}</td>
@@ -366,9 +446,9 @@ export function DailyReview() {
         )}
       </GlassCard>
 
-      {/* 4c. 全市场成交额 TOP20（客观公开榜单） */}
+      {/* 4c. 全市场成交额 TOP50（客观公开榜单） */}
       <div className="mb-3 flex items-center gap-2">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground"><BarChart3 className="h-4 w-4" /> 全市场成交额 TOP20</h3>
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground"><BarChart3 className="h-4 w-4" /> 全市场成交额 TOP50</h3>
         <span className="text-[11px] text-muted-foreground/50">客观公开榜单，非推荐 / 非预测 / 不构成投资建议</span>
         {turnover?.updated && <span className="ml-auto text-[11px] text-muted-foreground/50">{turnover.updated}</span>}
       </div>
@@ -408,7 +488,7 @@ export function DailyReview() {
       {/* 5. 板块资金趋势榜（行业） */}
       <div className="mb-3 flex items-center gap-2">
         <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground"><TrendingUp className="h-4 w-4" /> 板块资金趋势榜</h3>
-        <span className="text-[11px] text-muted-foreground/50">行业 · 按今日净流入排序</span>
+        <span className="text-[11px] text-muted-foreground/50">行业 · 按当日净流入排序</span>
       </div>
       <GlassCard className="mb-6">
         {sectors.length === 0 ? (

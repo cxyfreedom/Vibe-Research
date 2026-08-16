@@ -165,3 +165,23 @@ def test_malformed_primary_still_uses_backup(monkeypatch):
 
     monkeypatch.setattr(gstock.astock, "em_get", fake_get)
     assert gstock._search("AAPL")["code"] == "AAPL"
+
+
+def test_global_index_history_uses_previous_us_close_and_same_day_hk(monkeypatch):
+    def fake_rows(secid, end_date, limit=60):
+        offset = next(i for i, item in enumerate(gstock._INDICES) if item["secid"] == secid)
+        return [
+            {"date": "2026-08-07", "price": 100 + offset, "change_pct": 1 + offset},
+            {"date": "2026-08-10", "price": 200 + offset, "change_pct": 2 + offset},
+        ]
+
+    monkeypatch.setattr(gstock, "_index_daily_rows", fake_rows)
+    monkeypatch.setattr(gstock.time, "sleep", lambda _seconds: None)
+    rows = gstock.global_indices_for_dates(["2026-08-10"])["2026-08-10"]
+    by_key = {row["key"]: row for row in rows}
+
+    assert len(rows) == 5
+    assert by_key["dji"]["price"] == 100
+    assert by_key["spx"]["price"] == 101
+    assert by_key["hsi"]["price"] == 203
+    assert by_key["hstech"]["price"] == 204

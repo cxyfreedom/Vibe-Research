@@ -138,6 +138,7 @@ export interface SectorFlow {
 }
 export interface MarketOverview {
   sentiment: MarketSentiment; sectors: SectorFlow[]; updated: string;
+  activity?: Record<string, unknown>;
 }
 
 // 短线情绪：连板梯队 / 最高连板 / 炸板率 / 封板率 / 晋级率 / 涨跌停家数 + 连板股清单（客观公开榜单）
@@ -156,13 +157,21 @@ export interface ShortTermEmotion {
   yzt_count: number;
 }
 
-// 全市场成交额榜（客观公开榜单）
+// 全市场成交额 TOP50（客观公开榜单）
 export interface TurnoverStock {
   code: string; name: string;
   price: number | null; pct: number | null;
   amount: number | null; mcap: number | null; float_cap: number | null; industry: string;
 }
 export interface TurnoverTop { stocks: TurnoverStock[]; updated: string }
+
+export interface DailyReviewData {
+  date: string; historical: boolean; collected_at: string;
+  indices: IndexQuote[]; global_indices: GlobalIndex[];
+  overview: MarketOverview; emotion: ShortTermEmotion;
+  turnover: TurnoverTop;
+  activity: Record<string, unknown>;
+}
 
 export interface RadarItem {
   title: string; url: string; time: string; source: string; summary?: string; zh?: string;
@@ -173,6 +182,15 @@ export interface Industry {
 export interface RadarData {
   generated_at: string | null; recent_days: number; industries: Industry[];
   stats: { industries: number; total_sources: number; failed_sources?: number };
+}
+
+export interface MarketNewsItem {
+  source: "em" | "ths" | "cls"; title: string; summary: string; link: string;
+  pub_time: string; pub_ts: number; collected_at: string;
+}
+export interface MarketNewsData {
+  total: number; items: MarketNewsItem[];
+  sources: { source: string; count: number; latest: number }[];
 }
 
 export interface Holding {
@@ -243,17 +261,43 @@ export interface HkCashflow {
   currency: string | null; item_order: string[]; periods: HkCashflowPeriod[];
 }
 
+export interface MarketSnapshot {
+  id: number; dataset: string; source: string; scope: string;
+  trade_date: string; batch_ts: number; payload: Record<string, unknown>[] | Record<string, unknown>;
+  metadata: Record<string, unknown>; collected_at: string;
+}
+
+export interface DataHealth {
+  trade_date: string; schema_version: number; stock_universe: number;
+  stock_coverage: { data_type: string; success: number; failed: number; missing: number; coverage_pct: number }[];
+  datasets: { dataset: string; source: string; snapshots: number; first_date: string; last_date: string; latest_collect: string }[];
+  jobs: { job: string; source: string; status: string; detail: string; started_at: string; finished_at: string | null }[];
+  stock_failures: { code: string; data_type: string; error: string; updated_at: string }[];
+  stock_run: { id: number; status: string; total_stocks: number; total_tasks: number; completed_tasks: number; failed_tasks: number; detail: Record<string, unknown>; started_at: string; finished_at: string | null } | null;
+}
+export interface StockDataBundle {
+  code: string; trade_date: string; collected_at: string;
+  data: Record<string, unknown>;
+}
+
 export const api = {
   health: () => get<{ ok: boolean }>("/health"),
   indices: () => get<IndexQuote[]>("/indices"),
   marketOverview: () => get<MarketOverview>("/market/overview"),
   emotion: () => get<ShortTermEmotion>("/market/emotion"),
   turnoverTop: () => get<TurnoverTop>("/market/turnover-top"),
+  dailyReview: (date = "") => get<DailyReviewData>(`/market/daily-review${date ? `?date=${encodeURIComponent(date)}` : ""}`),
+  dailyReviewDates: () => get<string[]>("/market/daily-review/dates"),
+  dailyReviewRefresh: () => request<DailyReviewData>("/market/daily-review/refresh", "POST"),
   globalIndices: () => get<GlobalIndex[]>("/global/indices"),
   globalStock: (symbol: string) => get<GlobalStock>(`/global/stock?symbol=${encodeURIComponent(symbol)}`),
   hkCashflow: (symbol: string) => get<HkCashflow>(`/global/hk/cashflow?symbol=${encodeURIComponent(symbol)}`),
   radar: () => get<RadarData>("/radar"),
   radarRefresh: () => request<RadarData>("/radar/refresh", "POST"),
+  marketNews: (source = "all", fromDate = "", toDate = "", limit = 100) =>
+    get<MarketNewsData>(`/market-news?source=${encodeURIComponent(source)}&from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}&limit=${limit}`),
+  marketNewsDates: (source = "all") => get<string[]>(`/market-news/dates?source=${encodeURIComponent(source)}`),
+  marketNewsRefresh: () => request<MarketNewsData>("/market-news/refresh", "POST"),
   portfolio: () => get<PortfolioData>("/portfolio"),
   addHolding: (code: string, shares: number, cost: number) => request<PortfolioData>("/portfolio/holding", "POST", { code, shares, cost }),
   removeHolding: (code: string) => request<PortfolioData>(`/portfolio/holding?code=${code}`, "DELETE"),
@@ -274,6 +318,8 @@ export const api = {
   dividend: (code: string) => get<DividendRow[]>(`/dividend?code=${code}`),
   fundFlow: (code: string) => get<FundFlowRow[]>(`/fund-flow?code=${code}`),
   dragonTiger: (code: string) => get<DragonTiger>(`/dragon-tiger?code=${code}`),
+  marketDragonTiger: (code: string, date = "", reason = "") =>
+    get<DragonTiger>(`/market-lhb-detail?code=${code}&date=${encodeURIComponent(date)}&reason=${encodeURIComponent(reason)}`),
   lockup: (code: string) => get<Lockup>(`/lockup?code=${code}`),
   blocks: (code: string) => get<Blocks>(`/blocks?code=${code}`),
   hotConcepts: (code: string) => get<HotConcept[]>(`/hot-concepts?code=${code}`),
@@ -283,4 +329,14 @@ export const api = {
   uploadReport: (name: string, contentB64: string) =>
     request<MyReport>("/myreports", "POST", { name, content_b64: contentB64 }),
   deleteReport: (id: string) => request<{ ok: boolean }>(`/myreports/${id}`, "DELETE"),
+  marketLatest: (kind: string, source = "", scope = "", date = "") =>
+    get<MarketSnapshot | null>(`/market-history/${kind}/latest?source=${encodeURIComponent(source)}&scope=${encodeURIComponent(scope)}&date=${encodeURIComponent(date)}`),
+  marketHistory: (kind: string, source = "", scope = "", date = "", limit = 100) =>
+    get<{ items: MarketSnapshot[]; count: number }>(`/market-history/${kind}?source=${encodeURIComponent(source)}&scope=${encodeURIComponent(scope)}&date=${encodeURIComponent(date)}&limit=${limit}`),
+  marketDates: (kind: string, source = "", scope = "") =>
+    get<string[]>(`/market-history/${kind}/dates?source=${encodeURIComponent(source)}&scope=${encodeURIComponent(scope)}`),
+  runCollector: (job: string) => request<{ accepted: boolean; job: string; message: string }>(`/system/jobs/${job}/run`, "POST"),
+  dataHealth: (date = "") => get<DataHealth>(`/system/data-health${date ? `?date=${encodeURIComponent(date)}` : ""}`),
+  stockDataDates: (code: string) => get<string[]>(`/stock-data/${code}/dates`),
+  stockDataBundle: (code: string, date: string) => get<StockDataBundle>(`/stock-data/${code}/bundle?date=${encodeURIComponent(date)}`),
 };

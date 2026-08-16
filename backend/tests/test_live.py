@@ -78,7 +78,7 @@ def test_short_term_emotion_shape():
 
 @pytest.mark.live
 def test_turnover_top_shape():
-    """全市场成交额榜 Top20：结构正确，按成交额降序。"""
+    """全市场成交额榜 Top50：结构正确，按成交额降序。"""
     import market
     t = market.get_turnover_top()
     assert isinstance(t, dict) and "stocks" in t

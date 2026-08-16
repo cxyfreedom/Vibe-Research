@@ -5,19 +5,16 @@ A股数据层 + 可插拔 AI 层。全部只读、无状态；不预置任何标
 ## 安装
 
 ```bash
-cd backend
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+docker compose up --build -d
+docker compose logs -f backend
 ```
 
-> 行情 + 研报只需 `fastapi / uvicorn / requests`（秒装、必可用）。
-> 一致预期 / 新闻 / 公告需 `akshare`，K线 / 财务需 `mootdx`；未装时对应端点返回 501 + 安装提示，不影响其余功能。
+后端源码映射到容器 `/workspace/backend`，用户文件映射到项目 `data/user/`，
+PostgreSQL 数据映射到 `data/postgres/`。修改源码会自动重载，修改依赖后需要重新构建镜像。
 
 ## 1. HTTP API（给网页前端 + 系统 AI）
 
-```bash
-.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8900
-```
+宿主机访问地址为 <http://127.0.0.1:8900>。
 
 | 端点 | 说明 | 依赖 |
 |---|---|---|
@@ -38,6 +35,13 @@ python3 -m venv .venv
 | `POST /api/chat` | 系统 AI 对话（function calling，AI 自己调数据工具） | requests |
 | `POST /api/debate` | **多空辩论**（多 agent，流式 NDJSON）：事实底稿 → 多方 / 空方 →（可选反驳）→ 中立主持 | requests |
 | `POST /api/reflect` | **反思审计**（流式 NDJSON）：对一段已写好的分析做推理审计 | requests |
+| `GET /api/market-history/{kind}` | 市场快讯、热榜、资金流、行情池、技术扫描、板块、龙虎榜历史 | PostgreSQL |
+| `GET /api/stocks` | PostgreSQL 股票列表（搜索 / 分页） | PostgreSQL |
+| `GET /api/stock-data/{code}/history` · `/dates` | 个股 17 类日快照与可回溯日期 | PostgreSQL |
+| `GET /api/system/collectors` | 采集任务运行状态与最近结果 | PostgreSQL |
+| `POST /api/system/jobs/{job}/run` | 手动提交一次采集任务（异步） | PostgreSQL + akshare |
+
+后台调度默认自动执行：资讯每分钟、热榜每半小时；交易时段资金流与东方财富概念板块每分钟；交易日 15:05 执行日终数据，16:00 检查漏采并补跑，18:30 采龙虎榜，18:45 补齐个股席位详情，19:00 断点归档全部个股页面数据。调度使用交易所日历和 PostgreSQL advisory lock，多进程不会重复执行同名任务。
 
 `/api/debate` 请求体：`{"code": "600519", "rounds": 1, "llm": {...}}`（`rounds=2` 加一轮交叉反驳）。
 事件类型：`status` · `dossier_progress`（底稿逐项进度）· `dossier` · `stage`（角色开始）·

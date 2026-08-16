@@ -11,10 +11,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import math
 import os
 import random
 import re
+import threading
 import time
 import urllib.request
 from datetime import datetime, timedelta
@@ -25,10 +29,10 @@ UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
 def get_prefix(code: str) -> str:
     """6 位代码 → 交易所前缀。5 开头是沪市基金/ETF（51/56/58 等），深市基金 15/16 开头走默认 sz。"""
+    if code.startswith(("8", "92")):
+        return "bj"
     if code.startswith(("6", "9", "5")):
         return "sh"
-    if code.startswith("8"):
-        return "bj"
     return "sz"
 
 
@@ -419,14 +423,15 @@ def full_valuation(code: str) -> dict:
 # 融资融券、大宗交易、股东户数、分红、资金流、解禁、板块归属、投资者问答），
 # 不预置标的、不做主观评分、不给买卖建议。
 # 定位调整（2026-07-05）：涨停池 / 全市场成交额榜等【客观公开榜单】现已用于产品 UI
-# （每日复盘的连板股 + 成交额 TOP20）——如实展示公开榜单≠荐股，只要不附推荐/评分/预测。
+# （每日复盘的连板股 + 成交额 TOP50）——如实展示公开榜单≠荐股，只要不附推荐/评分/预测。
 # 仍不做：主观评分排名、买卖点位、涨跌预测；龙虎榜个股名单/强势股/人气榜等带隐性倾向的甩单暂不进 UI。
 # ===========================================================================
 
 _DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
-_EM_MIN_INTERVAL = 1.0          # 两次东财请求最小间隔（秒），内置防封节流
+_EM_MIN_INTERVAL = max(0.1, float(os.environ.get("VR_EM_MIN_INTERVAL", "0.25")))
 _em_last_call = [0.0]
-_EM_SESSIONS: dict = {}         # {direct(bool): requests.Session}
+_em_lock = threading.Lock()
+_EM_SESSIONS: dict = {}         # {(direct, thread_id): requests.Session}
 
 # 数据层连接模式：国内财经站（东财/腾讯/新浪）本应「直连」——很多用户开着 Clash/V2Ray
 # 科学上网，系统代理会把东财这类国内站路由挂掉（典型：push2.eastmoney.com 的 CONNECT 被掐）。
@@ -441,8 +446,9 @@ def _em_session(direct: bool):
 
     直连会话不重试（探测要快，失败即降级）；代理会话保留瞬态错误退避重试。惰性构建、复用。
     """
-    if direct in _EM_SESSIONS:
-        return _EM_SESSIONS[direct]
+    key = (direct, threading.get_ident())
+    if key in _EM_SESSIONS:
+        return _EM_SESSIONS[key]
     import requests
 
     s = requests.Session()
@@ -460,34 +466,35 @@ def _em_session(direct: bool):
         s.mount("http://", adapter)
     except Exception:
         pass  # 老版本 urllib3 缺参数时降级为无重试
-    _EM_SESSIONS[direct] = s
+    _EM_SESSIONS[key] = s
     return s
 
 
 def em_get(url: str, params: dict | None = None, headers: dict | None = None, timeout: int = 15):
-    """东财统一请求入口：串行限流 + **直连优先、失败降级系统代理**（避免科学上网代理挂掉国内站）。
+    """东财统一请求入口：全局请求间隔 + **直连优先、失败降级系统代理**。
 
     第一次请求探测：先直连（短超时、不重试），成功即固定走直连；失败则降级走系统代理并固定。
     探测结果整个进程复用，避免每次重试。`VR_DATA_PROXY=1` 可跳过探测、强制走代理。
     """
-    wait = _EM_MIN_INTERVAL - (time.time() - _em_last_call[0])
+    with _em_lock:
+        now = time.time()
+        scheduled = max(now, _em_last_call[0] + _EM_MIN_INTERVAL)
+        _em_last_call[0] = scheduled
+    wait = scheduled - now
     if wait > 0:
-        time.sleep(wait + random.uniform(0.1, 0.5))
+        time.sleep(wait + random.uniform(0.01, 0.05))
+    mode = _em_mode[0]
+    if mode != "auto":
+        return _em_session(mode == "direct").get(url, params=params, headers=headers, timeout=timeout)
+    # auto：先试直连，失败再走系统代理；探测结果供后续请求复用。
     try:
-        mode = _em_mode[0]
-        if mode != "auto":
-            return _em_session(mode == "direct").get(url, params=params, headers=headers, timeout=timeout)
-        # auto：先直连，成功固定 direct；直连失败再走系统代理、成功固定 proxy。
-        try:
-            r = _em_session(True).get(url, params=params, headers=headers, timeout=min(timeout, 8))
-            _em_mode[0] = "direct"
-            return r
-        except Exception:
-            r = _em_session(False).get(url, params=params, headers=headers, timeout=timeout)
-            _em_mode[0] = "proxy"
-            return r
-    finally:
-        _em_last_call[0] = time.time()
+        r = _em_session(True).get(url, params=params, headers=headers, timeout=min(timeout, 8))
+        _em_mode[0] = "direct"
+        return r
+    except Exception:
+        r = _em_session(False).get(url, params=params, headers=headers, timeout=timeout)
+        _em_mode[0] = "proxy"
+        return r
 
 
 # ---------------------------------------------------------------------------
@@ -624,23 +631,66 @@ def dividend_history(code: str, page_size: int = 20) -> list[dict]:
     } for r in data]
 
 
+def _money_number(value) -> float:
+    raw = str(value or "").strip().replace(",", "")
+    if not raw or raw in {"-", "--", "nan"}:
+        return 0.0
+    multiplier = 1.0
+    if raw.endswith("亿"):
+        raw, multiplier = raw[:-1], 100_000_000.0
+    elif raw.endswith("万"):
+        raw, multiplier = raw[:-1], 10_000.0
+    return float(raw) * multiplier
+
+
+def all_stock_fund_flow_snapshot(trade_date: str) -> dict[str, list[dict]]:
+    """Fetch the all-stock THS money-flow table once for the daily archive."""
+    ak = _akshare()
+    with contextlib.redirect_stderr(io.StringIO()):
+        frame = ak.stock_fund_flow_individual(symbol="即时")
+    if frame is None or frame.empty:
+        raise RuntimeError("同花顺个股资金流全市场结果为空")
+    result: dict[str, list[dict]] = {}
+    for _, row in frame.iterrows():
+        code = str(row.get("股票代码") or "").split(".")[0].zfill(6)
+        if not re.fullmatch(r"\d{6}", code):
+            continue
+        result[code] = [{
+            "date": trade_date,
+            "main_net": _money_number(row.get("净额")),
+            "small_net": 0.0, "mid_net": 0.0, "large_net": 0.0, "super_net": 0.0,
+            "source": "ths", "inflow": _money_number(row.get("流入资金")),
+            "outflow": _money_number(row.get("流出资金")),
+        }]
+    if not result:
+        raise RuntimeError("同花顺个股资金流无法解析")
+    return result
+
+
 def stock_fund_flow_120d(code: str) -> list[dict]:
     """个股资金流（日级，最近 120 交易日）：主力 / 小单 / 中单 / 大单 / 超大单净流入（元）。"""
     market_code = 1 if code.startswith("6") else 0
     params = {
         "secid": f"{market_code}.{code}",
+        "ut": "b2884a393a59ad64002292a3e90d46a5",
+        "klt": "101",
         "fields1": "f1,f2,f3,f7",
         "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
         "lmt": "120",
     }
+    url = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
     headers = {"User-Agent": UA, "Referer": "https://quote.eastmoney.com/", "Origin": "https://quote.eastmoney.com"}
     try:
-        d = em_get("https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get",
-                   params=params, headers=headers, timeout=15).json()
-    except Exception:
-        return []
+        response = em_get(url, params=params, headers=headers, timeout=15)
+        response.raise_for_status()
+        d = response.json()
+    except Exception as exc:
+        raise RuntimeError(f"资金流数据源请求失败：{exc}") from exc
+    data = d.get("data")
+    if data is None:
+        raise RuntimeError(f"资金流数据源返回异常：rc={d.get('rc')}")
     rows = []
-    for line in d.get("data", {}).get("klines", []):
+    for line in data.get("klines", []):
         p = line.split(",")
         if len(p) >= 6:
             def _f(x):
@@ -655,7 +705,8 @@ def stock_fund_flow_120d(code: str) -> list[dict]:
     return rows
 
 
-def dragon_tiger_board(code: str, trade_date: str | None = None, look_back: int = 30) -> dict:
+def dragon_tiger_board(code: str, trade_date: str | None = None, look_back: int = 30,
+                       reason: str | None = None) -> dict:
     """龙虎榜：该股近期上榜记录 + 最近一次买卖席位 TOP5 + 机构专用席位净买。"""
     trade_date = trade_date or datetime.now().strftime("%Y-%m-%d")
     start = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=look_back)).strftime("%Y-%m-%d")
@@ -664,7 +715,11 @@ def dragon_tiger_board(code: str, trade_date: str | None = None, look_back: int 
         "RPT_DAILYBILLBOARD_DETAILSNEW",
         filter_str=f'(TRADE_DATE>=\'{start}\')(TRADE_DATE<=\'{trade_date}\')(SECURITY_CODE="{code}")',
         page_size=50, sort_columns="TRADE_DATE", sort_types="-1")
+    normalize_reason = lambda value: "".join(str(value or "").split())
+    target_reason = normalize_reason(reason)
     for r in data:
+        if target_reason and normalize_reason(r.get("EXPLANATION")) != target_reason:
+            continue
         records.append({
             "date": str(r.get("TRADE_DATE", ""))[:10],
             "reason": r.get("EXPLANATION", ""),
@@ -679,11 +734,14 @@ def dragon_tiger_board(code: str, trade_date: str | None = None, look_back: int 
         buy_data = eastmoney_datacenter(
             "RPT_BILLBOARD_DAILYDETAILSBUY",
             filter_str=f'(TRADE_DATE=\'{latest}\')(SECURITY_CODE="{code}")',
-            page_size=10, sort_columns="BUY", sort_types="-1")
+            page_size=100, sort_columns="BUY", sort_types="-1")
         sell_data = eastmoney_datacenter(
             "RPT_BILLBOARD_DAILYDETAILSSELL",
             filter_str=f'(TRADE_DATE=\'{latest}\')(SECURITY_CODE="{code}")',
-            page_size=10, sort_columns="SELL", sort_types="-1")
+            page_size=100, sort_columns="SELL", sort_types="-1")
+        if target_reason:
+            buy_data = [row for row in buy_data if normalize_reason(row.get("EXPLANATION")) == target_reason]
+            sell_data = [row for row in sell_data if normalize_reason(row.get("EXPLANATION")) == target_reason]
         for r in buy_data[:5]:
             seats["buy"].append({"name": r.get("OPERATEDEPT_NAME", ""),
                                  "buy_amt": round((r.get("BUY") or 0) / 10000, 1),

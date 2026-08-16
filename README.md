@@ -31,7 +31,7 @@ Vibe-Research 是一个开源的「个人 AI 投研看板」，**主推 A 股、
 
 ## 产品预览
 
-**每日复盘** — 大盘 / 短线情绪(连板股 · 成交额 TOP20) / 板块资金一屏看全，一键交给你的 AI 复盘
+**每日复盘** — 大盘 / 短线情绪(连板股 · 成交额 TOP50) / 板块资金一屏看全，支持历史交易日，一键交给你的 AI 复盘
 
 ![Vibe-Research 每日复盘](docs/screenshots/daily-review.png)
 
@@ -62,7 +62,7 @@ Vibe-Research 是一个开源的「个人 AI 投研看板」，**主推 A 股、
 
 | 页面 | 包含的模块 / 能力 |
 |---|---|
-| 📊&nbsp;**每&#8288;日&#8288;复&#8288;盘** | 大盘指数 · **全球市场**（隔夜美股道指 / 标普 / 纳指 + 港股恒指 / 恒生科技）· 关注股票（自选实时行情）· **短线情绪**（连板股 / 最高连板 / 连板梯队 / 封板率 / 炸板率 / 晋级率）· **全市场成交额 TOP20** · 市场情绪（大盘宽度 / 题材投机 / 涨跌停）· 板块资金趋势榜 · 资金轮动 · AI 当日复盘 |
+| 📊&nbsp;**每&#8288;日&#8288;复&#8288;盘** | 大盘指数 · **全球市场**（隔夜美股道指 / 标普 / 纳指 + 港股恒指 / 恒生科技）· 关注股票（自选实时行情）· **短线情绪**（连板股 / 最高连板 / 连板梯队 / 封板率 / 炸板率 / 晋级率）· **全市场成交额 TOP50** · 市场情绪（大盘宽度 / 题材投机 / 涨跌停）· 板块资金趋势榜 · 资金轮动 · 历史交易日 · AI 复盘 |
 | 📡&nbsp;**资&#8288;讯&#8288;雷&#8288;达** | 12 赛道 108 个公开 RSS 源 · AI 一键提炼「今日要点」· A 股公告 / 公开新闻（挂钩你的关注列表）|
 | 🔍&nbsp;**个&#8288;股&#8288;数&#8288;据** | **A 股**：行情 · 估值矩阵（前向 PE / PEG）· **财报速览** · 估值历史分位 · 财务关键指标 · 研报 · 公告 · 新闻 · **资金面**（融资融券 / 股东户数 / 主力资金流 / 分红 / 大宗交易）· 龙虎榜 · 限售解禁 · 板块归属 · 热门概念 · 互动易问答。**美股 / 港股 / 韩股**（输 `AAPL` / `00700` / `005930.KS`）：行情 · 总市值 · 关键财务指标（营收 / 净利 / EPS / ROE / 毛利率 / 负债率；韩股仅行情）|
 | ⚔️&nbsp;**多&#8288;空&#8288;辩&#8288;论** | **多 agent**：后端先拉一份客观事实底稿（13 项数据），再让**多方研究员 / 空方研究员**基于同一份数据各自立论（可选交叉反驳），最后由**中立主持**归纳「双方共识 / 真正的分歧点 / 验证清单 / 数据缺口」。**刻意不产出买卖结论**。<br>⏱ 比问答重：一轮约 100 秒 / 3 次模型调用，**跑之前先看下方「一次辩论的开销」** |
@@ -116,6 +116,9 @@ Vibe-Research/
 │   ├── gstock.py        美股 / 港股数据（移植自 global-stock-data）
 │   ├── newsradar.py     资讯雷达（移植自 investment-news）
 │   ├── market.py        市场情绪 + 板块资金流 + 全球指数
+│   ├── market_store.py  PostgreSQL schema migration + 历史快照 + 采集状态
+│   ├── market_runtime.py 分钟/日终调度 + 交易日历 + 跨进程任务锁
+│   ├── stock_archive.py  全量个股 17 类数据每日归档与数据库读穿
 │   ├── portfolio.py     持仓 + 已清仓（存本地用户目录）
 │   ├── tools.py         AI 工具层（23 个数据工具，chat / MCP / debate 共用）
 │   ├── chat.py          系统 AI（OpenAI 兼容 function-calling）
@@ -130,14 +133,55 @@ Vibe-Research/
 ## 快速开始
 
 ```bash
-# 后端（:8900）
-cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8900
+# 首次构建并启动 PostgreSQL、后端和前端
+docker compose up --build -d
 
-# 前端（:5899）
-cd frontend && npm install && npm run dev
-# 浏览器打开 http://localhost:5899
+# 查看运行状态和日志
+docker compose ps
+docker compose logs -f backend frontend
+
+# 停止服务（不会删除 data/ 中的数据）
+docker compose down
 ```
+
+浏览器打开 <http://127.0.0.1:5899>。前后端源码通过 bind mount 直接映射进容器，
+修改后会自动热更新；PostgreSQL、用户文件、导入库和备份统一映射在项目 `data/`。
+修改 Python 或 Node 依赖后需要重新执行 `docker compose up --build -d`。
+
+### 启用市场历史与自动采集（PostgreSQL）
+
+「市场中心」的历史数据和全市场扫描结果统一存入 PostgreSQL。物理数据默认映射到
+项目内 `data/postgres/`（已 gitignore，不会进仓库）：
+
+Compose 会自动使用容器内的 PostgreSQL 地址并启用单个采集调度器；宿主机仍可通过
+`postgresql://vibe:vibe-local-only@127.0.0.1:54329/vibe_research` 访问数据库。
+
+从旧版 SQLite 市场数据库导入历史数据（源库只读，命令可重复执行）：
+
+```bash
+cd backend
+.venv/bin/python import_panel_db.py /path/to/legacy/panel.db --dry-run
+.venv/bin/python import_panel_db.py /path/to/legacy/panel.db
+```
+
+市场历史未配置时，原有 Vibe-Research 页面和接口仍可正常使用；只有「市场中心」返回配置提示。
+
+### 全量个股历史归档
+
+启用 PostgreSQL 后，`stocks` 任务每日同步 A 股股票列表，`stock_archive` 在交易日
+19:00 归档个股页面使用的 17 类数据：行情、估值、估值分位、财务、研报、公告、新闻、
+两融、大宗交易、股东户数、分红、资金流、龙虎榜、解禁、板块、热门概念和互动易。
+
+数据按 `股票代码 + 数据类型 + 交易日` 独立保存。同一交易日重跑会跳过已成功项，失败项可继续补采；
+页面接口优先读取当日 PostgreSQL 快照，缺失时才访问公开源并回写数据库。价格等日变数据每天新增一份，
+因此可以通过 `/api/stock-data/{code}/history` 和 `/api/stock-data/{code}/dates` 回溯。
+
+```bash
+curl -X POST http://127.0.0.1:8900/api/system/jobs/stock_archive/run
+curl http://127.0.0.1:8900/api/system/collectors
+```
+
+备份、恢复、数据保留和断点恢复见 [PostgreSQL 运维说明](docs/postgresql-operations.md)。
 
 ## 接入 AI
 

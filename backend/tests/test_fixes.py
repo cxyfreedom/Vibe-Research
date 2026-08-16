@@ -3,6 +3,7 @@
 空结果不缓存 / akshare 缺失降级 / 无 index 工具调用归位 / CLI 流式超时。
 """
 import pytest
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 import app as app_module
@@ -146,6 +147,37 @@ def test_full_valuation_string_numbers(monkeypatch):
     assert out["pe_26e"] == 50.0
 
 
+def test_stock_fund_flow_reports_local_transport_failure(monkeypatch):
+    monkeypatch.setattr(astock, "em_get", lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionError("blocked")))
+    with pytest.raises(RuntimeError, match="请求失败"):
+        astock.stock_fund_flow_120d("000001")
+
+
+def test_stock_fund_flow_does_not_treat_source_error_as_empty(monkeypatch):
+    response = SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"rc": -1, "data": None})
+    monkeypatch.setattr(astock, "em_get", lambda *args, **kwargs: response)
+    with pytest.raises(RuntimeError, match="返回异常"):
+        astock.stock_fund_flow_120d("000001")
+
+
+def test_all_stock_fund_flow_snapshot_normalizes_codes_and_money(monkeypatch):
+    class Frame:
+        empty = False
+
+        @staticmethod
+        def iterrows():
+            return iter([(0, {"股票代码": 1, "净额": "4216.11万",
+                              "流入资金": "6.60亿", "流出资金": "6.18亿"})])
+
+    monkeypatch.setattr(astock, "_akshare", lambda: SimpleNamespace(
+        stock_fund_flow_individual=lambda symbol: Frame(),
+    ))
+    data = astock.all_stock_fund_flow_snapshot("2026-08-14")
+    assert data["000001"][0]["main_net"] == pytest.approx(42_161_100)
+    assert data["000001"][0]["inflow"] == pytest.approx(660_000_000)
+    assert data["000001"][0]["source"] == "ths"
+
+
 # ── 短线情绪：涨停池脏数值（'-' 占位）不再让排序崩溃 ────────────────
 
 def test_emotion_dirty_amount(monkeypatch):
@@ -193,6 +225,39 @@ def test_market_degrades_without_akshare(monkeypatch):
     monkeypatch.setattr(astock, "_akshare", boom)
     assert market._sentiment() == {}
     assert market._sectors() == []
+
+
+def test_dragon_tiger_filters_gan_consulting_seats_by_reason(monkeypatch):
+    """甘咨询同日双原因：每条榜单只能读取与本原因匹配的买卖席位。"""
+    reasons = [
+        "日跌幅偏离值达到7%的前5只证券",
+        "连续三个交易日内，跌幅偏离值累计达到20%的证券",
+    ]
+
+    def fake_datacenter(report_name, **_kwargs):
+        if report_name == "RPT_DAILYBILLBOARD_DETAILSNEW":
+            return [
+                {"TRADE_DATE": "2026-08-14", "EXPLANATION": reason,
+                 "BILLBOARD_NET_AMT": index * 10000, "TURNOVERRATE": index}
+                for index, reason in enumerate(reasons, 1)
+            ]
+        side = "买" if report_name.endswith("BUY") else "卖"
+        return [
+            {"EXPLANATION": reason, "OPERATEDEPT_NAME": f"{reason[:2]}{side}{index}",
+             "OPERATEDEPT_CODE": str(index), "BUY": index * 10000,
+             "SELL": index * 20000, "NET": -index * 10000}
+            for reason in reasons for index in range(1, 6)
+        ]
+
+    monkeypatch.setattr(astock, "eastmoney_datacenter", fake_datacenter)
+    result = astock.dragon_tiger_board(
+        "000779", trade_date="2026-08-14", look_back=0, reason=reasons[1])
+
+    assert [row["reason"] for row in result["records"]] == [reasons[1]]
+    assert len(result["seats"]["buy"]) == 5
+    assert len(result["seats"]["sell"]) == 5
+    assert all(seat["name"].startswith("连续") for seat in result["seats"]["buy"])
+    assert all(seat["name"].startswith("连续") for seat in result["seats"]["sell"])
 
 
 # ── 流式工具调用：非标网关不带 index 时按 id 归位、不串参数 ──────────

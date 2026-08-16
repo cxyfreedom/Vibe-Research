@@ -8,3 +8,6 @@ requests
 akshare>=1.10
 mootdx>=0.10
 pandas
+
+# 市场历史库（配置 VR_DATABASE_URL 后启用）
+psycopg[binary]>=3.2

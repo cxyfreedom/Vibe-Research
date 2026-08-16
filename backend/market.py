@@ -37,13 +37,19 @@ def _num(v) -> int:
         return 0
 
 
-def _sentiment() -> dict:
-    """市场情绪：涨跌家数/涨停跌停/活跃度 + 大盘宽度、题材投机（客观数据机械分档）。"""
+def _activity() -> dict:
+    """乐咕市场活跃度原始字段，供每日复盘完整落库。"""
     try:
-        # akshare 惰性导入（同 astock 模式）：未装时降级返回空，不挡整个服务启动
         df = astock._akshare().stock_market_activity_legu()
-        d = {row["item"]: row["value"] for _, row in df.iterrows()}
+        return {row["item"]: row["value"] for _, row in df.iterrows()}
     except Exception:
+        return {}
+
+
+def _sentiment(activity: dict | None = None) -> dict:
+    """市场情绪：涨跌家数/涨停跌停/活跃度 + 大盘宽度、题材投机（客观数据机械分档）。"""
+    d = activity if activity is not None else _activity()
+    if not d:
         return {}
     up, down, flat = _num(d.get("上涨")), _num(d.get("下跌")), _num(d.get("平盘"))
     zt, zt_real = _num(d.get("涨停")), _num(d.get("真实涨停"))
@@ -92,9 +98,11 @@ def _sectors() -> list[dict]:
 def get_overview() -> dict:
     """市场情绪 + 板块资金（含缓存）。资金轮动由前端从 sectors 头尾取。"""
     def build():
+        activity = _activity()
         return {
-            "sentiment": _sentiment(),
+            "sentiment": _sentiment(activity),
             "sectors": _sectors(),
+            "activity": activity,
             "updated": datetime.now(BEIJING).strftime("%Y-%m-%d %H:%M"),
         }
     return _cached("overview", build, valid=lambda v: bool(v.get("sentiment") or v.get("sectors")))
@@ -172,10 +180,10 @@ def get_short_term_emotion() -> dict:
 
 
 def get_turnover_top() -> dict:
-    """全市场成交额榜 Top20（客观公开榜单，含缓存 5 分钟）。"""
+    """全市场成交额榜 Top50（客观公开榜单，含缓存 5 分钟）。"""
     def build():
         return {
-            "stocks": astock.market_turnover_rank(20),
+            "stocks": astock.market_turnover_rank(50),
             "updated": datetime.now(BEIJING).strftime("%Y-%m-%d %H:%M"),
         }
     return _cached("turnover_top", build, valid=lambda v: bool(v.get("stocks")))

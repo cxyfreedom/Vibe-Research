@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import date as _date
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,12 +22,17 @@ import astock
 import chat as chat_layer
 import cli_runtime
 import debate as debate_layer
+import daily_review
 import gstock
 import newsradar
 import portfolio as pf
 import market
 import myreports as mr
 import reflection as reflect_layer
+import market_store
+import market_runtime
+import market_collectors
+import stock_archive
 
 
 from version import read_version
@@ -34,6 +40,18 @@ from version import read_version
 __version__ = read_version()
 
 app = FastAPI(title="Vibe-Research API", version=__version__)
+
+
+@app.on_event("startup")
+def _start_market_runtime():
+    if market_store.enabled():
+        market_store.init_db()
+    market_runtime.start()
+
+
+@app.on_event("shutdown")
+def _stop_market_runtime():
+    market_runtime.stop()
 
 # 每半小时后台刷新持仓数据
 pf.start_scheduler(1800)
@@ -75,9 +93,19 @@ def _validate(code: str) -> str:
     return code
 
 
+def _stock_data(code: str, data_type: str, fetch):
+    if not market_store.enabled():
+        return fetch()
+    try:
+        return stock_archive.read_through(code, data_type, fetch)
+    except market_store.StoreUnavailable:
+        return fetch()
+
+
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "vibe-research-api", "version": __version__}
+    return {"ok": True, "service": "vibe-research-api", "version": __version__,
+            "market_database": market_store.enabled()}
 
 
 class LLMConfig(BaseModel):
@@ -340,11 +368,42 @@ def market_emotion():
 
 @app.get("/api/market/turnover-top")
 def market_turnover_top():
-    """全市场成交额榜 Top20（客观公开榜单数据，非推荐/非预测/不评分）。全站共享缓存 5 分钟。"""
+    """全市场成交额榜 Top50（客观公开榜单数据，非推荐/非预测/不评分）。全站共享缓存 5 分钟。"""
     try:
         return {"data": market.get_turnover_top()}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"成交额榜异常：{e}") from e
+
+
+@app.get("/api/market/daily-review")
+def market_daily_review(date: str = ""):
+    """读取最新每日复盘并落库，或读取指定交易日的历史快照。"""
+    try:
+        data = daily_review.get(date)
+        if data is None:
+            raise HTTPException(404, f"没有 {date} 的每日复盘数据")
+        return {"data": data}
+    except HTTPException:
+        raise
+    except market_store.StoreUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"每日复盘异常：{e}") from e
+
+
+@app.get("/api/market/daily-review/dates")
+def market_daily_review_dates():
+    """返回已有每日复盘交易日。"""
+    return {"data": _market_call(daily_review.dates)}
+
+
+@app.post("/api/market/daily-review/refresh")
+def market_daily_review_refresh():
+    """主动抓取外部数据并更新最新每日复盘快照。"""
+    try:
+        return {"data": daily_review.capture()}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"每日复盘刷新失败：{e}") from e
 
 
 @app.get("/api/global/indices")
@@ -417,7 +476,7 @@ def valuation_percentile(code: str = Query(...)):
     if hit and _time.time() - hit[0] < 1800:
         return {"data": hit[1]}
     try:
-        data = astock.valuation_percentile(code)
+        data = _stock_data(code, "percentile", lambda: astock.valuation_percentile(code))
         _PCT_CACHE[code] = (_time.time(), data)
         return {"data": data}
     except astock.DependencyMissing as e:
@@ -437,7 +496,7 @@ def announcements(code: str = Query(...)):
     if hit and _time.time() - hit[0] < 900:
         return {"data": hit[1]}
     try:
-        data = astock.announcements(code)
+        data = _stock_data(code, "announcements", lambda: astock.announcements(code))
         _ANN_CACHE[code] = (_time.time(), data)
         return {"data": data}
     except Exception as e:  # noqa: BLE001
@@ -455,7 +514,7 @@ def financials(code: str = Query(...)):
     if hit and _time.time() - hit[0] < 1800:
         return {"data": hit[1]}
     try:
-        data = astock.financials(code)
+        data = _stock_data(code, "financials", lambda: astock.financials(code))
         _FIN_CACHE[code] = (_time.time(), data)
         return {"data": data}
     except astock.DependencyMissing as e:
@@ -469,7 +528,7 @@ def valuation(code: str = Query(...)):
     """完整估值：行情 + 一致预期 + 前向PE/PEG/消化年数。"""
     code = _validate(code)
     try:
-        return {"data": astock.full_valuation(code)}
+        return {"data": _stock_data(code, "valuation", lambda: astock.full_valuation(code))}
     except ValueError as e:
         raise HTTPException(404, str(e)) from e
     except Exception as e:  # noqa: BLE001
@@ -481,7 +540,10 @@ def reports(code: str = Query(...), pages: int = Query(2, ge=1, le=5)):
     """个股研报列表（东财，含 PDF 链接）。仅需 requests。"""
     code = _validate(code)
     try:
-        rows = astock.eastmoney_reports(code, max_pages=pages)
+        if pages == 2:
+            rows = _stock_data(code, "reports", lambda: astock.eastmoney_reports(code, max_pages=pages))
+        else:
+            rows = astock.eastmoney_reports(code, max_pages=pages)
         for r in rows:
             r["pdfUrl"] = astock.pdf_url(r.get("infoCode", "")) if r.get("infoCode") else None
         return {"data": rows}
@@ -494,7 +556,8 @@ def news(code: str = Query(...), limit: int = Query(20, ge=1, le=50)):
     """个股新闻（东财，需 akshare）。"""
     code = _validate(code)
     try:
-        return {"data": astock.stock_news(code, limit=limit)}
+        rows = _stock_data(code, "news", lambda: astock.stock_news(code, limit=20))
+        return {"data": rows[:limit] if isinstance(rows, list) else rows}
     except astock.DependencyMissing as e:
         raise HTTPException(501, str(e)) from e
     except Exception as e:  # noqa: BLE001
@@ -572,7 +635,7 @@ def margin(code: str = Query(...)):
     """融资融券明细（东财，日级）。缓存 30 分钟。"""
     code = _validate(code)
     try:
-        return {"data": _cached("margin", code, 1800, lambda: astock.margin_trading(code))}
+        return {"data": _stock_data(code, "margin", lambda: _cached("margin", code, 1800, lambda: astock.margin_trading(code)))}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"融资融券异常：{e}") from e
 
@@ -582,7 +645,7 @@ def block_trade(code: str = Query(...)):
     """大宗交易（东财）。缓存 30 分钟。"""
     code = _validate(code)
     try:
-        return {"data": _cached("block", code, 1800, lambda: astock.block_trade(code))}
+        return {"data": _stock_data(code, "block_trade", lambda: _cached("block", code, 1800, lambda: astock.block_trade(code)))}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"大宗交易异常：{e}") from e
 
@@ -592,7 +655,7 @@ def holders(code: str = Query(...)):
     """股东户数变化（东财，季度级）。缓存 30 分钟。"""
     code = _validate(code)
     try:
-        return {"data": _cached("holders", code, 1800, lambda: astock.holder_num_change(code))}
+        return {"data": _stock_data(code, "holders", lambda: _cached("holders", code, 1800, lambda: astock.holder_num_change(code)))}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"股东户数异常：{e}") from e
 
@@ -602,7 +665,7 @@ def dividend(code: str = Query(...)):
     """分红送转历史（东财）。缓存 30 分钟。"""
     code = _validate(code)
     try:
-        return {"data": _cached("dividend", code, 1800, lambda: astock.dividend_history(code))}
+        return {"data": _stock_data(code, "dividend", lambda: _cached("dividend", code, 1800, lambda: astock.dividend_history(code)))}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"分红送转异常：{e}") from e
 
@@ -613,7 +676,7 @@ def fund_flow(code: str = Query(...)):
     注：push2his 对部分大陆住宅 IP 有间歇风控，可能返回空（非代码问题）。"""
     code = _validate(code)
     try:
-        return {"data": _cached("fundflow", code, 900, lambda: astock.stock_fund_flow_120d(code))}
+        return {"data": _stock_data(code, "fund_flow", lambda: _cached("fundflow", code, 900, lambda: astock.stock_fund_flow_120d(code)))}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"资金流异常：{e}") from e
 
@@ -623,9 +686,41 @@ def dragon_tiger(code: str = Query(...)):
     """龙虎榜：该股近期上榜记录 + 买卖席位 + 机构净买（东财）。缓存 30 分钟。"""
     code = _validate(code)
     try:
-        return {"data": _cached("dt", code, 1800, lambda: astock.dragon_tiger_board(code))}
+        return {"data": _stock_data(code, "dragon_tiger", lambda: _cached("dt", code, 1800, lambda: astock.dragon_tiger_board(code)))}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"龙虎榜异常：{e}") from e
+
+
+@app.get("/api/market-lhb-detail")
+def market_lhb_detail(code: str = Query(...), date: str = Query(""), reason: str = Query("")):
+    """Market-center LHB detail for one exact list date."""
+    code = _validate(code)
+    try:
+        trade_date = date or None
+        if trade_date:
+            _date.fromisoformat(trade_date)
+        scope = market_collectors.lhb_detail_scope(code, reason)
+        hit = _market_call(lambda: market_store.latest_snapshot(
+            "lhb_detail", "eastmoney-direct", scope, trade_date))
+        if hit:
+            data = hit["payload"]
+            if trade_date and isinstance(data, dict):
+                data = {**data, "records": [row for row in data.get("records", [])
+                                             if str(row.get("date", ""))[:10] == trade_date]}
+            return {"data": data}
+        data = astock.dragon_tiger_board(
+            code, trade_date=trade_date, look_back=0 if trade_date else 30, reason=reason or None)
+        saved_date = trade_date or _date.today().isoformat()
+        _market_call(lambda: market_store.save_snapshot(
+            "lhb_detail", "eastmoney-direct", scope, saved_date, 0, data,
+            {"code": code, "reason": reason}))
+        return {"data": data}
+    except ValueError as e:
+        raise HTTPException(400, "日期必须为 YYYY-MM-DD") from e
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"龙虎榜详情异常：{e}") from e
 
 
 @app.get("/api/lockup")
@@ -633,7 +728,7 @@ def lockup(code: str = Query(...)):
     """限售解禁日历：历史解禁 + 未来 90 天待解禁（东财）。缓存 30 分钟。"""
     code = _validate(code)
     try:
-        return {"data": _cached("lockup", code, 1800, lambda: astock.lockup_expiry(code))}
+        return {"data": _stock_data(code, "lockup", lambda: _cached("lockup", code, 1800, lambda: astock.lockup_expiry(code)))}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"解禁日历异常：{e}") from e
 
@@ -643,7 +738,7 @@ def blocks(code: str = Query(...)):
     """个股所属板块/概念归属（东财 slist）。缓存 30 分钟。"""
     code = _validate(code)
     try:
-        return {"data": _cached("blocks", code, 1800, lambda: astock.concept_blocks(code))}
+        return {"data": _stock_data(code, "blocks", lambda: _cached("blocks", code, 1800, lambda: astock.concept_blocks(code)))}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"板块归属异常：{e}") from e
 
@@ -653,7 +748,7 @@ def hot_concepts(code: str = Query(...)):
     """个股当下被市场归到哪些概念在炒（东财热门概念命中）。缓存 15 分钟。"""
     code = _validate(code)
     try:
-        return {"data": _cached("hotcon", code, 900, lambda: astock.hot_concepts(code))}
+        return {"data": _stock_data(code, "hot_concepts", lambda: _cached("hotcon", code, 900, lambda: astock.hot_concepts(code)))}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"热门概念异常：{e}") from e
 
@@ -663,7 +758,7 @@ def investor_qa(code: str = Query(...)):
     """互动易问答（巨潮）：投资者提问 + 公司回复。缓存 15 分钟。"""
     code = _validate(code)
     try:
-        return {"data": _cached("irm", code, 900, lambda: astock.investor_qa(code))}
+        return {"data": _stock_data(code, "investor_qa", lambda: _cached("irm", code, 900, lambda: astock.investor_qa(code)))}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"互动易异常：{e}") from e
 
@@ -681,3 +776,136 @@ def industry(top: int = Query(20, ge=5, le=50)):
         return {"data": data}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"行业排名异常：{e}") from e
+
+
+@app.get("/api/stocks")
+def stocks(search: str = "", page: int = Query(1, ge=1), size: int = Query(100, ge=1, le=500)):
+    """PostgreSQL stock universe synchronized from the public market source."""
+    return {"data": _market_call(lambda: market_store.query_stocks(search, page, size))}
+
+
+@app.get("/api/stock-data/{code}/history")
+def stock_data_history(code: str, data_type: str = "", limit: int = Query(100, ge=1, le=500)):
+    code = _validate(code)
+    if data_type and data_type not in stock_archive.DATA_TYPES:
+        raise HTTPException(400, "未知个股数据类型")
+    return {"data": _market_call(lambda: market_store.stock_data_history(code, data_type, limit))}
+
+
+@app.get("/api/stock-data/{code}/dates")
+def stock_data_dates(code: str):
+    code = _validate(code)
+    return {"data": _market_call(lambda: market_store.stock_data_dates(code))}
+
+
+@app.get("/api/stock-data/{code}/bundle")
+def stock_data_bundle(code: str, date: str = Query(...)):
+    code = _validate(code)
+    try:
+        _date.fromisoformat(date)
+    except ValueError as exc:
+        raise HTTPException(400, "日期必须为 YYYY-MM-DD") from exc
+    return {"data": _market_call(lambda: market_store.stock_data_bundle(code, date))}
+
+
+# ---- 市场历史与扫描（PostgreSQL） ------------------------------------------
+
+_MARKET_DATASETS = {
+    "news-feed": "news_feed", "hot": "hot",
+    "fund-flow": "fund_flow", "fund-flow-daily": "fund_flow_daily",
+    "boards": "boards", "pools": "market_pool", "tech-ranks": "tech_rank",
+    "board-constituents": "board_constituents", "lhb": "lhb",
+    "stocks": "stocks",
+}
+
+
+def _market_call(fn):
+    try:
+        return fn()
+    except market_store.StoreUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+
+
+@app.get("/api/market-history/{kind}")
+def market_history(kind: str, source: str = "", scope: str = "", date: str = "",
+                   limit: int = Query(100, ge=1, le=500)):
+    dataset = _MARKET_DATASETS.get(kind)
+    if not dataset:
+        raise HTTPException(404, "未知市场数据集")
+    rows = _market_call(lambda: market_store.snapshots(dataset, source, scope, date or None, limit))
+    return {"data": {"items": rows, "count": len(rows)}}
+
+
+@app.get("/api/market-history/{kind}/latest")
+def market_history_latest(kind: str, source: str = "", scope: str = "", date: str = ""):
+    dataset = _MARKET_DATASETS.get(kind)
+    if not dataset:
+        raise HTTPException(404, "未知市场数据集")
+    return {"data": _market_call(lambda: market_store.latest_snapshot(dataset, source, scope, date or None))}
+
+
+@app.get("/api/market-history/{kind}/dates")
+def market_history_dates(kind: str, source: str = "", scope: str = ""):
+    dataset = _MARKET_DATASETS.get(kind)
+    if not dataset:
+        raise HTTPException(404, "未知市场数据集")
+    return {"data": _market_call(lambda: market_store.available_dates(dataset, source, scope))}
+
+
+@app.get("/api/market-news")
+def market_news(source: str = "all", limit: int = Query(100, ge=1, le=500),
+                from_date: str = "", to_date: str = ""):
+    if source not in {"all", "em", "ths", "cls"}:
+        raise HTTPException(400, "未知资讯来源")
+    try:
+        return {"data": _market_call(lambda: market_store.query_news(source, limit, from_date, to_date))}
+    except ValueError as e:
+        raise HTTPException(400, "日期必须为 YYYY-MM-DD") from e
+
+
+@app.get("/api/market-news/dates")
+def market_news_dates(source: str = "all"):
+    if source not in {"all", "em", "ths", "cls"}:
+        raise HTTPException(400, "未知资讯来源")
+    return {"data": _market_call(lambda: market_store.news_dates(source))}
+
+
+@app.post("/api/market-news/refresh")
+def market_news_refresh():
+    _market_call(market_collectors.collect_news)
+    return {"data": _market_call(lambda: market_store.query_news("all", 100))}
+
+
+@app.get("/api/system/collectors")
+def collectors_status():
+    jobs = _market_call(market_store.status_summary) if market_store.enabled() else []
+    database = {"schema_version": _market_call(market_store.schema_version),
+                "stock_run": _market_call(market_store.stock_run_status)} if market_store.enabled() else {}
+    return {"data": {"enabled": market_store.enabled(), **market_runtime.status(),
+                     "database": database, "jobs": jobs}}
+
+
+@app.get("/api/system/collector-logs")
+def collectors_logs(job: str = "", status: str = "", page: int = 1,
+                    size: int = Query(100, ge=1, le=200)):
+    return {"data": _market_call(lambda: market_store.logs(job, status, page, size))}
+
+
+@app.get("/api/system/data-health")
+def data_health(date: str = ""):
+    try:
+        if date:
+            _date.fromisoformat(date)
+        return {"data": _market_call(lambda: market_store.data_health(date or None))}
+    except ValueError as exc:
+        raise HTTPException(400, "日期必须为 YYYY-MM-DD") from exc
+
+
+@app.post("/api/system/jobs/{job}/run", status_code=202)
+def collectors_run(job: str):
+    try:
+        accepted = market_runtime.submit(job)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    return {"data": {"accepted": accepted, "job": job,
+                     "message": "任务已提交" if accepted else "任务已在运行"}}

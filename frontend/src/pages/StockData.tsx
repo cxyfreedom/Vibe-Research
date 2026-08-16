@@ -1,13 +1,14 @@
 import { useRef, useState } from "react";
 import {
   Search, FileText, Newspaper, Loader2, AlertCircle, LineChart, BarChart3, Megaphone,
-  Wallet, Trophy, CalendarClock, Boxes, MessageSquare,
+  Wallet, CalendarClock, Boxes, MessageSquare, ChevronRight, CalendarDays,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { AskAiButton } from "@/components/ui/AskAiButton";
 import { EarningsSnapshot } from "@/components/ui/EarningsSnapshot";
 import { Disclaimer } from "@/components/ui/Disclaimer";
+import { DragonTigerDetails } from "@/components/ui/DragonTigerDetails";
 import {
   api, ApiError, type Valuation, type Report, type NewsItem, type ValPercentile, type ValMetric,
   type Financials, type Announcement, type MarginRow, type BlockTradeRow, type HolderRow,
@@ -95,6 +96,12 @@ export function StockData() {
   const [dividend, setDividend] = useState<DividendRow[]>([]);
   const [fundFlow, setFundFlow] = useState<FundFlowRow[]>([]);
   const [dt, setDt] = useState<DragonTiger | null>(null);
+  const [dtExpanded, setDtExpanded] = useState<Set<string>>(new Set());
+  const [dtDetails, setDtDetails] = useState<Record<string, DragonTiger | null>>({});
+  const [dtLoading, setDtLoading] = useState<Set<string>>(new Set());
+  const [queriedCode, setQueriedCode] = useState("");
+  const [historyDates, setHistoryDates] = useState<string[]>([]);
+  const [historyDate, setHistoryDate] = useState("");
   const [lockup, setLockup] = useState<Lockup | null>(null);
   const [blocks, setBlocks] = useState<Blocks | null>(null);
   const [hotCon, setHotCon] = useState<HotConcept[]>([]);
@@ -108,7 +115,7 @@ export function StockData() {
     if (!c) { setErr("请输入代码"); return; }
     const rid = ++runIdRef.current;
     setLoading(true); setErr(null); setDepNote(null); setVal(null); setReports([]); setNews([]); setPctl(null); setFin(null); setAnns([]);
-    setMargin([]); setBlockT([]); setHolders([]); setDividend([]); setFundFlow([]); setDt(null); setLockup(null); setBlocks(null); setHotCon([]); setQa([]);
+    setMargin([]); setBlockT([]); setHolders([]); setDividend([]); setFundFlow([]); setDt(null); setDtExpanded(new Set()); setDtDetails({}); setDtLoading(new Set()); setQueriedCode(""); setHistoryDates([]); setHistoryDate(""); setLockup(null); setBlocks(null); setHotCon([]); setQa([]);
     setGStock(null); setCashflow(null);
 
     // 6 位纯数字 = A 股；否则（字母 / 港股短代码）走美股 / 港股（global-stock-data）
@@ -127,6 +134,7 @@ export function StockData() {
     }
 
     // A 股：竞态守卫（快速换代码时只让最新一次回填）+ 资金面/筹码独立回填、不阻塞主数据
+    setQueriedCode(c);
     const ok = <T,>(set: (v: T) => void) => (v: T) => { if (rid === runIdRef.current) set(v); };
     api.margin(c).then(ok(setMargin)).catch(() => {});
     api.blockTrade(c).then(ok(setBlockT)).catch(() => {});
@@ -138,6 +146,7 @@ export function StockData() {
     api.blocks(c).then(ok(setBlocks)).catch(() => {});
     api.hotConcepts(c).then(ok(setHotCon)).catch(() => {});
     api.investorQa(c).then(ok(setQa)).catch(() => {});
+    api.stockDataDates(c).then(ok(setHistoryDates)).catch(() => {});
     try {
       // 行情+估值+研报+历史分位+财务+公告（新闻单独降级）
       const [v, r, p, f, a] = await Promise.all([
@@ -163,8 +172,36 @@ export function StockData() {
       if (rid !== runIdRef.current) return;
       setErr(e instanceof ApiError ? e.message : "查询失败");
     } finally {
-      if (rid === runIdRef.current) setLoading(false);
+      if (rid === runIdRef.current) {
+        setLoading(false);
+        window.setTimeout(() => api.stockDataDates(c).then((dates) => {
+          if (rid === runIdRef.current) setHistoryDates(dates);
+        }).catch(() => {}), 500);
+      }
     }
+  };
+
+  const loadHistory = async (date: string) => {
+    setHistoryDate(date);
+    if (!date) { void run(); return; }
+    if (!queriedCode) return;
+    const rid = ++runIdRef.current;
+    setLoading(true); setErr(null); setDtExpanded(new Set()); setDtDetails({}); setDtLoading(new Set());
+    try {
+      const bundle = await api.stockDataBundle(queriedCode, date);
+      if (rid !== runIdRef.current) return;
+      const item = bundle.data;
+      setVal((item.valuation as Valuation) || null);
+      setReports((item.reports as Report[]) || []); setNews((item.news as NewsItem[]) || []);
+      setPctl((item.percentile as ValPercentile) || null); setFin((item.financials as Financials) || null);
+      setAnns((item.announcements as Announcement[]) || []); setMargin((item.margin as MarginRow[]) || []);
+      setBlockT((item.block_trade as BlockTradeRow[]) || []); setHolders((item.holders as HolderRow[]) || []);
+      setDividend((item.dividend as DividendRow[]) || []); setFundFlow((item.fund_flow as FundFlowRow[]) || []);
+      setDt((item.dragon_tiger as DragonTiger) || null); setLockup((item.lockup as Lockup) || null);
+      setBlocks((item.blocks as Blocks) || null); setHotCon((item.hot_concepts as HotConcept[]) || []);
+      setQa((item.investor_qa as QaRow[]) || []);
+    } catch (error) { if (rid === runIdRef.current) setErr(error instanceof ApiError ? error.message : "历史数据读取失败"); }
+    finally { if (rid === runIdRef.current) setLoading(false); }
   };
 
   const metrics = val ? [
@@ -232,6 +269,7 @@ export function StockData() {
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
           查询
         </button>
+        {queriedCode && historyDates.length > 0 && <label className="flex items-center gap-2 rounded-lg border border-border bg-card/60 px-3 text-sm text-muted-foreground"><CalendarDays className="h-4 w-4" /><select value={historyDate} onChange={(event) => void loadHistory(event.target.value)} className="bg-transparent py-2 text-foreground outline-none"><option value="">最新数据</option>{historyDates.map((date) => <option key={date} value={date}>{date}</option>)}</select></label>}
       </div>
 
       {err && (
@@ -495,32 +533,39 @@ export function StockData() {
           {/* 龙虎榜 */}
           {dt && dt.records.length > 0 && (
             <GlassCard className="mb-4">
-              <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold"><Trophy className="h-4 w-4 text-primary" /> 龙虎榜（近30日 {dt.records.length} 次）</h3>
+              <h3 className="mb-3 text-sm font-semibold">龙虎榜（近30日 {dt.records.length} 次）</h3>
               <div className="space-y-2">
-                {dt.records.slice(0, 6).map((r, i) => (
-                  <div key={i} className="flex items-center gap-3 border-b border-border/40 pb-2 text-sm last:border-0">
-                    <span className="w-20 shrink-0 font-mono text-xs text-muted-foreground">{r.date}</span>
-                    <span className="flex-1 truncate">{r.reason}</span>
-                    <span className={cn("shrink-0 font-mono text-xs", r.net_buy >= 0 ? "text-danger" : "text-success")}>净买 {r.net_buy} 万</span>
-                  </div>
-                ))}
+                {dt.records.map((row, index) => {
+                  const rowKey = `${row.date}-${row.reason || index}`;
+                  const expanded = dtExpanded.has(rowKey);
+                  const detail = dtDetails[rowKey];
+                  const open = async () => {
+                    if (expanded) {
+                      setDtExpanded((keys) => { const next = new Set(keys); next.delete(rowKey); return next; });
+                      return;
+                    }
+                    setDtExpanded((keys) => new Set(keys).add(rowKey));
+                    if (detail || dtLoading.has(rowKey)) return;
+                    const rid = runIdRef.current;
+                    setDtLoading((keys) => new Set(keys).add(rowKey));
+                    try {
+                      const result = await api.marketDragonTiger(queriedCode, row.date, row.reason);
+                      if (rid === runIdRef.current) setDtDetails((details) => ({ ...details, [rowKey]: result }));
+                    } catch {
+                      if (rid === runIdRef.current) setDtDetails((details) => ({ ...details, [rowKey]: null }));
+                    } finally {
+                      if (rid === runIdRef.current) setDtLoading((keys) => { const next = new Set(keys); next.delete(rowKey); return next; });
+                    }
+                  };
+                  return <div key={rowKey} className="overflow-hidden rounded-lg border border-border/50">
+                    <button type="button" onClick={() => void open()} className="flex w-full items-start gap-3 px-3 py-2.5 text-left hover:bg-muted/30">
+                      <ChevronRight className={cn("mt-0.5 h-4 w-4 shrink-0 text-primary transition-transform", expanded && "rotate-90")} />
+                      <span className="min-w-0 flex-1"><span className="mb-0.5 flex flex-wrap justify-between gap-2 text-xs"><span className="font-mono text-muted-foreground">{row.date}</span><span className={row.net_buy >= 0 ? "text-danger" : "text-success"}>净买 {row.net_buy} 万</span></span><span className="block break-words text-sm">{row.reason}</span></span>
+                    </button>
+                    {expanded && <div className="border-t border-border/40 px-4 py-3">{dtLoading.has(rowKey) ? <p className="flex items-center justify-center gap-2 py-5 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在读取对应席位…</p> : detail && (detail.seats.buy.length || detail.seats.sell.length) ? <DragonTigerDetails data={detail} title={`${row.date} · ${row.reason}`} periodLabel="当日" seatsOnly /> : <p className="py-5 text-center text-xs text-muted-foreground">该条记录暂无席位详情。</p>}</div>}
+                  </div>;
+                })}
               </div>
-              {(dt.seats.buy.length > 0 || dt.seats.sell.length > 0) && (
-                <div className="mt-3 grid gap-4 border-t border-border/40 pt-3 sm:grid-cols-2">
-                  <div>
-                    <p className="mb-1.5 text-xs font-medium text-danger">买入席位 TOP</p>
-                    {dt.seats.buy.map((s, i) => (
-                      <div key={i} className="flex justify-between gap-2 text-xs text-muted-foreground"><span className="truncate">{s.name}</span><span className="shrink-0 font-mono">净{s.net}万</span></div>
-                    ))}
-                  </div>
-                  <div>
-                    <p className="mb-1.5 text-xs font-medium text-success">卖出席位 TOP</p>
-                    {dt.seats.sell.map((s, i) => (
-                      <div key={i} className="flex justify-between gap-2 text-xs text-muted-foreground"><span className="truncate">{s.name}</span><span className="shrink-0 font-mono">净{s.net}万</span></div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </GlassCard>
           )}
 
