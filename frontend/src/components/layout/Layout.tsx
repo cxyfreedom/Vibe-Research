@@ -3,7 +3,7 @@ import { Link, Outlet, useLocation } from "react-router-dom";
 import {
   Activity, Radar, Wallet, Settings, Search, NotebookPen,
   Moon, Sun, ChevronsLeft, ChevronsRight, LineChart, Github,
-  Database, Star, FileText, Swords, HeartPulse,
+  Database, Star, FileText, Swords, HeartPulse, Menu, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
@@ -34,16 +34,71 @@ export function Layout() {
   const { pathname } = useLocation();
   const { dark, toggle } = useDarkMode();
   const [collapsed, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
     storageSet("vr-sidebar", collapsed ? "collapsed" : "expanded");
   }, [collapsed]);
 
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
+
   return (
-    <div className="flex h-screen">
+    <div className="flex h-dvh min-w-0">
+      {/* Mobile header */}
+      <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border/60 bg-background/90 px-3 backdrop-blur-xl md:hidden">
+        <Link to="/daily-review" className="flex min-w-0 items-center gap-2">
+          <LineChart className="h-5 w-5 shrink-0 text-primary text-glow" />
+          <span className="truncate text-base font-extrabold tracking-tight">
+            Vibe-<span className="text-primary">Research</span>
+          </span>
+        </Link>
+        <div className="flex items-center gap-1">
+          <button onClick={toggle} className="rounded-lg p-2 text-muted-foreground hover:bg-muted/50 hover:text-foreground" title={dark ? "亮色" : "暗色"}>
+            {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
+          <button onClick={() => setMobileOpen(true)} className="rounded-lg p-2 text-muted-foreground hover:bg-muted/50 hover:text-foreground" aria-label="打开导航">
+            <Menu className="h-5 w-5" />
+          </button>
+        </div>
+      </header>
+
+      {mobileOpen && (
+        <button className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden" onClick={() => setMobileOpen(false)} aria-label="关闭导航遮罩" />
+      )}
+      <aside className={cn(
+        "glass fixed inset-y-2 left-2 z-50 flex w-[min(18rem,calc(100vw-1rem))] flex-col rounded-2xl transition-transform duration-200 md:hidden",
+        mobileOpen ? "translate-x-0" : "-translate-x-[calc(100%+1rem)]",
+      )}>
+        <div className="flex items-center justify-between border-b border-border/50 p-4">
+          <Link to="/daily-review" className="flex items-center gap-2">
+            <LineChart className="h-6 w-6 text-primary text-glow" />
+            <span className="text-lg font-extrabold tracking-tight">Vibe-<span className="text-primary">Research</span></span>
+          </Link>
+          <button onClick={() => setMobileOpen(false)} className="rounded-lg p-2 text-muted-foreground hover:bg-muted/50 hover:text-foreground" aria-label="关闭导航">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <nav className="flex-1 space-y-1 overflow-y-auto p-2.5">
+          {NAV.map(({ to, icon: Icon, label }) => (
+            <Link key={to} to={to} className={cn(
+              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors",
+              pathname === to ? "bg-primary/15 font-medium text-primary shadow-glow" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+            )}>
+              <Icon className="h-4 w-4 shrink-0" />{label}
+            </Link>
+          ))}
+        </nav>
+        <div className="flex items-center justify-between border-t border-border/50 p-3 text-xs text-muted-foreground">
+          <span>{APP_VERSION} · 不荐股 · 不预测</span>
+          <a href={REPO_URL} target="_blank" rel="noreferrer" className="rounded p-1.5 hover:text-foreground" title="GitHub"><Github className="h-4 w-4" /></a>
+        </div>
+      </aside>
+
       {/* Sidebar */}
       <aside className={cn(
-        "glass z-10 m-2 flex shrink-0 flex-col rounded-2xl transition-all duration-200",
+        "glass z-10 m-2 hidden shrink-0 flex-col rounded-2xl transition-all duration-200 md:flex",
         collapsed ? "w-14" : "w-60",
       )}>
         {/* Brand */}
@@ -120,8 +175,8 @@ export function Layout() {
       </aside>
 
       {/* Main */}
-      <main className="flex-1 overflow-auto">
-        <div className="mx-auto max-w-6xl px-6 py-6">
+      <main className="min-w-0 flex-1 overflow-auto pt-14 md:pt-0">
+        <div className="mx-auto min-w-0 max-w-6xl px-3 py-4 sm:px-4 md:px-6 md:py-6">
           <Outlet />
         </div>
       </main>

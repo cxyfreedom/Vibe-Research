@@ -256,6 +256,9 @@ def collect_hot() -> dict:
             try:
                 value = _retry_call(fetch)
                 rows = value if isinstance(value, list) else _records(value)
+                if not rows:
+                    errors[source] = "来源暂不可用：返回空列表"
+                    continue
                 store.save_snapshot("hot", source, "", td, batch, rows)
                 total += len(rows)
             except Exception as exc:

@@ -177,7 +177,7 @@ export function DailyReview() {
         title="每日复盘"
         subtitle={`${reviewDate} · 大盘 / 情绪 / 板块资金一屏看全，交给你的 AI 做复盘`}
         actions={
-          <div className="relative z-50 flex items-center gap-2">
+          <div className="relative z-50 flex w-full flex-wrap items-center gap-2 sm:w-auto">
             <div className="relative">
               <button type="button" disabled={historyLoading} aria-haspopup="listbox" aria-expanded={dateOpen}
                 onClick={() => setDateOpen((open) => !open)}
@@ -255,13 +255,13 @@ export function DailyReview() {
         )}
       </div>
       <GlassCard className="mb-6">
-        <div className="mb-3 flex gap-2">
+        <div className="mb-3 flex min-w-0 gap-2">
           <input
             value={watchInput}
             onChange={(e) => setWatchInput(e.target.value.replace(/[^\d,\s]/g, "").slice(0, 80))}
             onKeyDown={(e) => e.key === "Enter" && addWatch()}
             placeholder="加自选：可批量，如 600519 000858"
-            className="w-60 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
+            className="min-w-0 flex-1 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50 sm:w-60 sm:flex-none"
           />
           <button onClick={addWatch}
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary shadow-glow hover:bg-primary/25">

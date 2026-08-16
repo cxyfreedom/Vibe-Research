@@ -79,6 +79,8 @@
 
   * { @apply border-border; }
 
+  html, body, #root { min-width: 0; min-height: 100%; }
+
   body {
     @apply bg-background text-foreground;
     /* 纵深暖冷双光晕（顶橙 + 右下冷蓝），别留死黑 */
@@ -87,6 +89,7 @@
       radial-gradient(1100px 620px at 12% -12%, hsl(15 89% 56% / 0.11), transparent 60%),
       radial-gradient(980px 720px at 108% 112%, hsl(220 60% 45% / 0.08), transparent 55%);
     background-attachment: fixed;
+    overflow: hidden;
   }
 
   .light body {

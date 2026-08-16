@@ -253,13 +253,13 @@ export function StockData() {
       />
 
       {/* 查询框 */}
-      <div className="mb-5 flex gap-2">
+      <div className="mb-5 flex min-w-0 flex-wrap gap-2">
         <input
           value={code}
           onChange={(e) => setCode(e.target.value.replace(/[^a-zA-Z0-9.]/g, "").toUpperCase().slice(0, 12))}
           onKeyDown={(e) => e.key === "Enter" && run()}
           placeholder="A 股 6 位代码，或美股/港股/韩股（AAPL / 00700 / 005930.KS）"
-          className="w-80 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className="min-w-0 flex-1 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50 sm:w-80 sm:flex-none"
         />
         <button
           onClick={run}
@@ -269,7 +269,7 @@ export function StockData() {
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
           查询
         </button>
-        {queriedCode && historyDates.length > 0 && <label className="flex items-center gap-2 rounded-lg border border-border bg-card/60 px-3 text-sm text-muted-foreground"><CalendarDays className="h-4 w-4" /><select value={historyDate} onChange={(event) => void loadHistory(event.target.value)} className="bg-transparent py-2 text-foreground outline-none"><option value="">最新数据</option>{historyDates.map((date) => <option key={date} value={date}>{date}</option>)}</select></label>}
+        {queriedCode && historyDates.length > 0 && <label className="flex w-full items-center gap-2 rounded-lg border border-border bg-card/60 px-3 text-sm text-muted-foreground sm:w-auto"><CalendarDays className="h-4 w-4" /><select value={historyDate} onChange={(event) => void loadHistory(event.target.value)} className="min-w-0 flex-1 bg-transparent py-2 text-foreground outline-none"><option value="">最新数据</option>{historyDates.map((date) => <option key={date} value={date}>{date}</option>)}</select></label>}
       </div>
 
       {err && (
@@ -444,13 +444,13 @@ export function StockData() {
               <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold"><FileText className="h-4 w-4 text-primary" /> 近期研报（{reports.length}）</h3>
               <div className="space-y-2">
                 {reports.slice(0, 12).map((r, i) => (
-                  <div key={i} className="flex items-center gap-3 border-b border-border/40 pb-2 text-sm last:border-0">
+                  <div key={i} className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border/40 pb-2 text-sm last:border-0 sm:flex-nowrap sm:gap-3">
                     <span className="w-20 shrink-0 font-mono text-xs text-muted-foreground">{(r.publishDate || "").slice(0, 10)}</span>
-                    <span className="w-24 shrink-0 truncate text-xs text-muted-foreground">{r.orgSName}</span>
+                    <span className="max-w-32 shrink-0 truncate text-xs text-muted-foreground sm:w-24">{r.orgSName}</span>
                     {r.pdfUrl ? (
-                      <a href={r.pdfUrl} target="_blank" rel="noreferrer" className="flex-1 truncate hover:text-primary">{r.title}</a>
+                      <a href={r.pdfUrl} target="_blank" rel="noreferrer" className="w-full min-w-0 hover:text-primary sm:w-auto sm:flex-1 sm:truncate">{r.title}</a>
                     ) : (
-                      <span className="flex-1 truncate">{r.title}</span>
+                      <span className="w-full min-w-0 sm:w-auto sm:flex-1 sm:truncate">{r.title}</span>
                     )}
                     {r.emRatingName && <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">{r.emRatingName}</span>}
                   </div>
@@ -464,13 +464,13 @@ export function StockData() {
               <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold"><Megaphone className="h-4 w-4 text-primary" /> 近期公告（{anns.length}）</h3>
               <div className="space-y-2">
                 {anns.slice(0, 12).map((a, i) => (
-                  <div key={i} className="flex items-center gap-3 border-b border-border/40 pb-2 text-sm last:border-0">
+                  <div key={i} className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border/40 pb-2 text-sm last:border-0 sm:flex-nowrap sm:gap-3">
                     <span className="w-20 shrink-0 font-mono text-xs text-muted-foreground">{a.date}</span>
-                    {a.type && <span className="w-24 shrink-0 truncate text-xs text-muted-foreground">{a.type}</span>}
+                    {a.type && <span className="max-w-32 shrink-0 truncate text-xs text-muted-foreground sm:w-24">{a.type}</span>}
                     {a.url ? (
-                      <a href={a.url} target="_blank" rel="noreferrer" className="flex-1 truncate hover:text-primary">{a.title.replace(/^[^:：]*[:：]/, "")}</a>
+                      <a href={a.url} target="_blank" rel="noreferrer" className="w-full min-w-0 hover:text-primary sm:w-auto sm:flex-1 sm:truncate">{a.title.replace(/^[^:：]*[:：]/, "")}</a>
                     ) : (
-                      <span className="flex-1 truncate">{a.title}</span>
+                      <span className="w-full min-w-0 sm:w-auto sm:flex-1 sm:truncate">{a.title}</span>
                     )}
                   </div>
                 ))}
@@ -487,12 +487,12 @@ export function StockData() {
             ) : (
               <div className="space-y-2">
                 {news.slice(0, 10).map((n, i) => (
-                  <div key={i} className="flex items-center gap-3 border-b border-border/40 pb-2 text-sm last:border-0">
+                  <div key={i} className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border/40 pb-2 text-sm last:border-0 sm:flex-nowrap sm:gap-3">
                     <span className="w-28 shrink-0 font-mono text-xs text-muted-foreground">{(n.发布时间 || "").slice(0, 16)}</span>
                     {n.新闻链接 ? (
-                      <a href={n.新闻链接} target="_blank" rel="noreferrer" className="flex-1 truncate hover:text-primary">{n.新闻标题}</a>
+                      <a href={n.新闻链接} target="_blank" rel="noreferrer" className="w-full min-w-0 hover:text-primary sm:w-auto sm:flex-1 sm:truncate">{n.新闻标题}</a>
                     ) : (
-                      <span className="flex-1 truncate">{n.新闻标题}</span>
+                      <span className="w-full min-w-0 sm:w-auto sm:flex-1 sm:truncate">{n.新闻标题}</span>
                     )}
                   </div>
                 ))}

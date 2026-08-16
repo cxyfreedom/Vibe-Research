@@ -139,7 +139,7 @@ function MarketNewsPanel() {
     {loading && !data ? <p className="flex justify-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />加载资讯…</p>
       : !data?.items.length ? <p className="py-8 text-center text-sm text-muted-foreground">当前条件暂无资讯</p>
       : <div className="space-y-2">{data.items.map((it, i) => <a key={`${it.source}|${it.title}|${i}`} href={it.link || undefined} target={it.link ? "_blank" : undefined} rel="noreferrer" className="group block border-b border-border/30 pb-3 text-sm last:border-0">
-        <div className="flex items-baseline gap-3"><span className="w-32 shrink-0 font-mono text-xs text-muted-foreground/70">{it.pub_time}</span><span className={cn("w-16 shrink-0 rounded border px-1.5 py-0.5 text-center text-xs", NEWS_SOURCE_BADGES[it.source] || "border-border bg-muted text-muted-foreground")}>{NEWS_SOURCES.find((s) => s.key === it.source)?.label || it.source}</span><span className="flex-1 font-medium group-hover:text-primary">{it.title}</span>{it.link && <ExternalLink className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-60" />}</div>
+        <div className="flex min-w-0 flex-wrap items-center gap-2 sm:flex-nowrap sm:items-baseline sm:gap-3"><span className="shrink-0 font-mono text-xs text-muted-foreground/70 sm:w-32">{it.pub_time}</span><span className={cn("w-16 shrink-0 rounded border px-1.5 py-0.5 text-center text-xs", NEWS_SOURCE_BADGES[it.source] || "border-border bg-muted text-muted-foreground")}>{NEWS_SOURCES.find((s) => s.key === it.source)?.label || it.source}</span><span className="w-full min-w-0 font-medium group-hover:text-primary sm:w-auto sm:flex-1">{it.title}</span>{it.link && <ExternalLink className="hidden h-3 w-3 shrink-0 opacity-0 group-hover:opacity-60 sm:block" />}</div>
         {it.summary && <p className="mt-1 pl-0 text-xs leading-5 text-muted-foreground sm:pl-52">{it.summary}</p>}
       </a>)}</div>}
   </div>;
@@ -287,11 +287,11 @@ function InvestmentNewsPanel() {
                 ) : (
                   cur.items.map((it, i) => (
                     <a key={i} href={it.url} target="_blank" rel="noreferrer"
-                      className="group flex items-baseline gap-3 border-b border-border/30 pb-2 text-sm last:border-0">
-                      <span className="w-24 shrink-0 font-mono text-xs text-muted-foreground/70">{it.time}</span>
-                      <span className="w-20 shrink-0 truncate text-xs text-muted-foreground">{it.source}</span>
-                      <span className="flex-1 group-hover:text-primary">{it.zh || it.title}</span>
-                      <ExternalLink className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground/0 group-hover:text-primary/60" />
+                      className="group flex min-w-0 flex-wrap items-center gap-2 border-b border-border/30 pb-2 text-sm last:border-0 sm:flex-nowrap sm:items-baseline sm:gap-3">
+                      <span className="shrink-0 font-mono text-xs text-muted-foreground/70 sm:w-24">{it.time}</span>
+                      <span className="max-w-28 shrink-0 truncate text-xs text-muted-foreground sm:w-20">{it.source}</span>
+                      <span className="w-full min-w-0 group-hover:text-primary sm:w-auto sm:flex-1">{it.zh || it.title}</span>
+                      <ExternalLink className="mt-0.5 hidden h-3 w-3 shrink-0 text-muted-foreground/0 group-hover:text-primary/60 sm:block" />
                     </a>
                   ))
                 )}
@@ -407,12 +407,12 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
         <div className="space-y-2">
           {rows.map((r, i) => (
             <a key={i} href={r.url || undefined} target={r.url ? "_blank" : undefined} rel="noreferrer"
-              className={cn("group flex items-baseline gap-3 border-b border-border/30 pb-2 text-sm last:border-0", r.url && "cursor-pointer")}>
-              <span className="w-20 shrink-0 font-mono text-xs text-muted-foreground/70">{(r.when || "").slice(kind === "filings" ? 0 : 5, kind === "filings" ? 10 : 16)}</span>
-              <span className="w-16 shrink-0 truncate text-xs text-primary/90" title={r.code}>{r.name}</span>
+              className={cn("group flex min-w-0 flex-wrap items-center gap-2 border-b border-border/30 pb-2 text-sm last:border-0 sm:flex-nowrap sm:items-baseline sm:gap-3", r.url && "cursor-pointer")}>
+              <span className="shrink-0 font-mono text-xs text-muted-foreground/70 sm:w-20">{(r.when || "").slice(kind === "filings" ? 0 : 5, kind === "filings" ? 10 : 16)}</span>
+              <span className="max-w-24 shrink-0 truncate text-xs text-primary/90 sm:w-16" title={r.code}>{r.name}</span>
               {kind === "filings" && r.meta && <span className="hidden w-20 shrink-0 truncate text-xs text-muted-foreground sm:block">{r.meta}</span>}
-              <span className="flex-1 group-hover:text-primary">{r.title}</span>
-              {r.url && <ExternalLink className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground/0 group-hover:text-primary/60" />}
+              <span className="w-full min-w-0 group-hover:text-primary sm:w-auto sm:flex-1">{r.title}</span>
+              {r.url && <ExternalLink className="mt-0.5 hidden h-3 w-3 shrink-0 text-muted-foreground/0 group-hover:text-primary/60 sm:block" />}
             </a>
           ))}
         </div>

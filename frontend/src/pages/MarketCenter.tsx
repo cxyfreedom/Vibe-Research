@@ -178,6 +178,7 @@ export function MarketCenter() {
   const [detailsByRow, setDetailsByRow] = useState<Record<string, DragonTiger | null>>({});
   const [loadingRowKeys, setLoadingRowKeys] = useState<Set<string>>(new Set());
   const detailEpoch = useRef(0);
+  const hotRequest = useRef(0);
   const [hotDates, setHotDates] = useState<string[]>([]);
   const [hotDate, setHotDate] = useState("");
   const [hotBatches, setHotBatches] = useState<MarketSnapshot[]>([]);
@@ -214,16 +215,22 @@ export function MarketCenter() {
     finally { setLoading(false); }
   };
 
-  const loadHot = async (date: string, batch = 0) => {
+  const loadHot = async (date: string, batch = 0, source = current.source) => {
+    const request = ++hotRequest.current;
     setLoading(true);
+    setSnapshot(null);
     try {
-      const result = await api.marketHistory("hot", current.source, "", date, 100);
+      const result = await api.marketHistory("hot", source, "", date, 100);
+      if (request !== hotRequest.current) return;
       setHotBatches(result.items);
       const selected = result.items.find((item) => item.batch_ts === batch) || result.items[0] || null;
       setHotBatch(selected?.batch_ts || 0);
       setSnapshot(selected);
-    } catch (error) { toast.error(error instanceof ApiError ? error.message : String(error)); setSnapshot(null); }
-    finally { setLoading(false); }
+    } catch (error) {
+      if (request === hotRequest.current) toast.error(error instanceof ApiError ? error.message : String(error));
+    } finally {
+      if (request === hotRequest.current) setLoading(false);
+    }
   };
 
   const loadFundHistory = async (date: string) => {
@@ -247,6 +254,7 @@ export function MarketCenter() {
   }, [fundPlaying]);
 
   useEffect(() => {
+    hotRequest.current += 1; setSnapshot(null);
     detailEpoch.current += 1; setExpandedRowKeys(new Set()); setDetailsByRow({}); setLoadingRowKeys(new Set());
     boardRequest.current += 1; setSortLabel(""); setSortDirection("desc"); setSelectedBoard(""); setConstituents([]); setConstituentsLoading(false); setFundHistory([]);
     if (group.id === "fund") {
@@ -268,12 +276,19 @@ export function MarketCenter() {
     }
     if (group.id !== "hot") { setHistoryDates([]); setHistoryDate(""); void load(""); return; }
     setHotDates([]); setHotDate(""); setHotBatches([]); setHotBatch(0); setLoading(true);
-    api.marketDates("hot", current.source, "").then((dates) => {
+    const request = hotRequest.current;
+    const source = current.source;
+    api.marketDates("hot", source, "").then((dates) => {
+      if (request !== hotRequest.current) return;
       setHotDates(dates);
       const date = dates[0] || "";
       setHotDate(date);
-      return date ? loadHot(date) : load();
-    }).catch((error) => { toast.error(error instanceof ApiError ? error.message : String(error)); setLoading(false); });
+      if (date) return loadHot(date, 0, source);
+      setLoading(false);
+    }).catch((error) => {
+      if (request !== hotRequest.current) return;
+      toast.error(error instanceof ApiError ? error.message : String(error)); setLoading(false);
+    });
   }, [groupIndex, viewIndex]); // eslint-disable-line react-hooks/exhaustive-deps
   const rows = useMemo(() => {
     if (!snapshot) return [];
@@ -389,7 +404,7 @@ export function MarketCenter() {
   };
 
   return <div>
-    <PageHeader title="市场中心" subtitle="全市场热度、资金、行情池、技术形态、板块和龙虎榜" actions={<div className="flex gap-2"><button onClick={run} className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"><RefreshCw className="h-4 w-4" />立即采集</button>{group.id === "lhb" && <button onClick={backfillDragonTiger} className="rounded-lg border border-primary/50 px-3 py-2 text-sm text-primary">补抓个股详情</button>}</div>} />
+    <PageHeader title="市场中心" subtitle="全市场热度、资金、行情池、技术形态、板块和龙虎榜" actions={<div className="flex flex-wrap gap-2"><button onClick={run} className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"><RefreshCw className="h-4 w-4" />立即采集</button>{group.id === "lhb" && <button onClick={backfillDragonTiger} className="rounded-lg border border-primary/50 px-3 py-2 text-sm text-primary">补抓个股详情</button>}</div>} />
     <div className="mb-3 flex gap-2 overflow-x-auto pb-1">{GROUPS.map((item, index) => <button key={item.id} onClick={() => { setGroupIndex(index); setViewIndex(0); }} className={cn("shrink-0 rounded-lg px-3 py-1.5 text-sm", groupIndex === index ? "bg-primary/15 font-medium text-primary shadow-glow" : "text-muted-foreground hover:bg-muted/50")}>{item.label}</button>)}</div>
     {group.id === "fund" ? <div className="mb-4 space-y-2 rounded-xl border border-border/60 bg-card/60 p-2.5">
       <div className="flex flex-wrap gap-2">{FUND_SCOPES.map(([key, label]) => <button key={key} onClick={() => { const index = group.views.findIndex((item) => item.id.includes(`-${key}-`) && (fundPeriod === "live" ? item.id.endsWith("-live") : item.id.endsWith(`-${fundPeriod}`))); setViewIndex(index); }} className={cn("rounded-lg border px-3 py-1.5 text-xs transition-colors", fundScope === key ? "border-primary bg-primary/15 font-medium text-primary" : "border-border text-muted-foreground hover:border-primary/60")}>{label}</button>)}</div>
@@ -426,7 +441,7 @@ export function MarketCenter() {
     </div>)}
     <GlassCard className="[container-type:inline-size]">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-3"><div><h3 className="font-semibold">{group.label} · {current.label}</h3><p className="text-xs text-muted-foreground">{snapshot ? `${snapshot.trade_date} · ${snapshot.source}${snapshot.scope ? ` · ${snapshot.scope}` : ""} · ${new Date(snapshot.collected_at).toLocaleString("zh-CN")}` : "暂无快照"}</p></div><button onClick={() => group.id === "hot" && hotDate ? void loadHot(hotDate, hotBatch) : void load(historyDate)} disabled={loading} className="inline-flex items-center gap-1.5 text-sm text-primary">{loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{loading ? "读取中…" : "刷新显示"}</button></div>
-      {!rows.length ? <p className="py-12 text-center text-sm text-muted-foreground">PostgreSQL 中暂无该分类数据，请执行采集或切换其他分类。</p> : <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead><tr className="border-b border-border text-xs text-muted-foreground">{columns.map((column) => <th key={column.label} className="whitespace-nowrap px-2 py-2 font-medium">{column.sortable ? <button onClick={() => sortBy(column)} className="inline-flex items-center gap-1 hover:text-foreground">{column.label}<ArrowUpDown className={cn("h-3 w-3", sortLabel === column.label && "text-primary")} /></button> : column.label}</th>)}{(group.id === "lhb" || (group.id === "boards" && current.source !== "ths")) && <th className="px-2 py-2 font-medium">详情</th>}</tr></thead><tbody>{displayRows.map((row, index) => {
+      {loading && !snapshot ? <p className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在读取{current.label}数据…</p> : !rows.length ? <p className="py-12 text-center text-sm text-muted-foreground">PostgreSQL 中暂无该分类数据，请执行采集或切换其他分类。</p> : <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead><tr className="border-b border-border text-xs text-muted-foreground">{columns.map((column) => <th key={column.label} className="whitespace-nowrap px-2 py-2 font-medium">{column.sortable ? <button onClick={() => sortBy(column)} className="inline-flex items-center gap-1 hover:text-foreground">{column.label}<ArrowUpDown className={cn("h-3 w-3", sortLabel === column.label && "text-primary")} /></button> : column.label}</th>)}{(group.id === "lhb" || (group.id === "boards" && current.source !== "ths")) && <th className="px-2 py-2 font-medium">详情</th>}</tr></thead><tbody>{displayRows.map((row, index) => {
         const rowReason = String(pick(row, ["上榜原因", "reason"]) || "");
         const rowDate = String(pick(row, ["上榜日", "trade_date"]) || snapshot?.trade_date || "").slice(0, 10);
         const rowKey = `${rowDate}-${codeOf(row)}-${rowReason || index}`;
@@ -439,11 +454,11 @@ export function MarketCenter() {
             {group.id === "lhb" && <td className="px-2 py-2 text-primary"><ChevronRight className={cn("h-4 w-4 transition-transform", expanded && "rotate-90")} /></td>}
             {group.id === "boards" && current.source !== "ths" && <td className="px-2 py-2 text-primary"><ChevronRight className={cn("h-4 w-4 transition-transform", boardExpanded && "rotate-90")} /></td>}
           </tr>
-          {expanded && <tr className="border-b border-border/60 bg-muted/15"><td colSpan={columns.length + 1} className="px-5 py-4">
-            <div className="sticky left-5 w-[calc(100cqw-2.5rem)] max-w-none">{loadingRowKeys.has(rowKey) ? <p className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在读取龙虎榜席位详情…</p> : detailsByRow[rowKey] && (detailsByRow[rowKey]!.seats.buy.length || detailsByRow[rowKey]!.seats.sell.length) ? <DragonTigerDetails data={detailsByRow[rowKey]!} title={`龙虎榜 · ${pick(row, ["名称", "name"]) || codeOf(row)} ${codeOf(row)}${rowReason ? ` · ${rowReason}` : ""}`} periodLabel="当日" seatsOnly /> : <p className="py-8 text-center text-sm text-muted-foreground">该股在当前榜单日期和上榜原因下暂无席位详情。</p>}</div>
+          {expanded && <tr className="border-b border-border/60 bg-muted/15"><td colSpan={columns.length + 1} className="px-2 py-3 sm:px-5 sm:py-4">
+            <div className="sticky left-2 w-[calc(100cqw-1rem)] max-w-none sm:left-5 sm:w-[calc(100cqw-2.5rem)]">{loadingRowKeys.has(rowKey) ? <p className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在读取龙虎榜席位详情…</p> : detailsByRow[rowKey] && (detailsByRow[rowKey]!.seats.buy.length || detailsByRow[rowKey]!.seats.sell.length) ? <DragonTigerDetails data={detailsByRow[rowKey]!} title={`龙虎榜 · ${pick(row, ["名称", "name"]) || codeOf(row)} ${codeOf(row)}${rowReason ? ` · ${rowReason}` : ""}`} periodLabel="当日" seatsOnly /> : <p className="py-8 text-center text-sm text-muted-foreground">该股在当前榜单日期和上榜原因下暂无席位详情。</p>}</div>
           </td></tr>}
-          {boardExpanded && <tr className="border-b border-border/60 bg-muted/15"><td colSpan={columns.length + 1} className="px-5 py-4">
-            <div className="sticky left-5 w-[calc(100cqw-2.5rem)] max-w-none">
+          {boardExpanded && <tr className="border-b border-border/60 bg-muted/15"><td colSpan={columns.length + 1} className="px-2 py-3 sm:px-5 sm:py-4">
+            <div className="sticky left-2 w-[calc(100cqw-1rem)] max-w-none sm:left-5 sm:w-[calc(100cqw-2.5rem)]">
               <h4 className="mb-3 text-sm font-semibold">{board} · 成分股（{constituents.length}）</h4>
               {constituentsLoading ? <p className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在读取成分股…</p> : !constituents.length ? <p className="py-8 text-center text-sm text-muted-foreground">暂无已落库的成分股数据。</p> : <div className="max-h-96 overflow-y-auto rounded-lg border border-border/60"><table className="w-full min-w-[620px] text-sm"><thead className="sticky top-0 bg-card"><tr className="border-b border-border text-xs text-muted-foreground"><th className="px-2 py-2 text-left">代码</th><th className="px-2 py-2 text-left">名称</th><th className="px-2 py-2 text-right">最新价</th><th className="px-2 py-2 text-right">涨跌幅</th><th className="px-2 py-2 text-right">换手率</th><th className="px-2 py-2 text-right">成交额</th></tr></thead><tbody>{constituents.map((stock, stockIndex) => { const pct = numeric(stock.change_pct); return <tr key={`${stock.code}-${stockIndex}`} className="border-b border-border/40"><td className="px-2 py-2 font-mono">{String(stock.code || "—")}</td><td className="px-2 py-2 font-medium">{String(stock.name || "—")}</td><td className="px-2 py-2 text-right">{display(stock.price)}</td><td className={cn("px-2 py-2 text-right", Number.isFinite(pct) && (pct > 0 ? "text-danger" : pct < 0 ? "text-success" : ""))}>{display(stock.change_pct, "pct")}</td><td className="px-2 py-2 text-right">{display(stock.turnover, "plainPct")}</td><td className="px-2 py-2 text-right">{display(stock.amount, "money")}</td></tr>; })}</tbody></table></div>}
             </div>

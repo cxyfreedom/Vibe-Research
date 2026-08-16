@@ -43,12 +43,16 @@ def connection() -> Iterator[Any]:
         raise StoreUnavailable("未配置 VR_DATABASE_URL，市场历史与采集功能尚未启用")
     psycopg, dict_row = _driver()
     try:
-        with psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=5) as conn:
-            yield conn
+        conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=5)
     except StoreUnavailable:
         raise
     except Exception as exc:
         raise StoreUnavailable(f"无法连接市场数据库：{exc}") from exc
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 SCHEMA = """
@@ -91,7 +95,7 @@ CREATE TABLE IF NOT EXISTS collector_logs (
     id BIGSERIAL PRIMARY KEY,
     job TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL CHECK (status IN ('running', 'ok', 'fail', 'skipped')),
+    status TEXT NOT NULL CHECK (status IN ('running', 'ok', 'partial', 'fail', 'skipped')),
     detail TEXT NOT NULL DEFAULT '',
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at TIMESTAMPTZ
@@ -171,6 +175,11 @@ SET metadata=(metadata - 'migrated_from') || '{"schema":"daily-review-v1"}'::jso
 WHERE dataset='daily_review';
 DELETE FROM market_snapshots WHERE dataset='activity';
 DELETE FROM collector_logs WHERE job='activity';
+""",
+    4: """
+ALTER TABLE collector_logs DROP CONSTRAINT IF EXISTS collector_logs_status_check;
+ALTER TABLE collector_logs ADD CONSTRAINT collector_logs_status_check
+    CHECK (status IN ('running', 'ok', 'partial', 'fail', 'skipped'));
 """,
 }
 

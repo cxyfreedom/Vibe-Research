@@ -61,3 +61,34 @@ def test_run_marks_source_errors_as_partial(monkeypatch):
     assert result["count"] == 112
     assert finished[0][:2] == (7, "partial")
     assert json.loads(finished[0][2]) == {"count": 112, "errors": {"em": "unavailable"}}
+
+
+def test_hot_empty_source_is_partial_without_saving_empty_snapshot(monkeypatch):
+    class EmptyFrame:
+        def __len__(self):
+            return 0
+
+    saved = []
+    finished = []
+    monkeypatch.setattr(market_collectors, "_ak", lambda: type("Ak", (), {
+        "stock_hot_search_baidu": staticmethod(lambda **kwargs: EmptyFrame()),
+    })())
+    monkeypatch.setattr(market_collectors, "_eastmoney_hot_rank", lambda: [{"当前排名": 1}])
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: type("Response", (), {
+        "raise_for_status": lambda self: None,
+        "json": lambda self: {"data": {"stock_list": [{"order": 1}]}},
+    })())
+    monkeypatch.setattr(market_collectors.store, "save_snapshot", lambda *args: saved.append(args))
+    monkeypatch.setattr(market_collectors.store, "start_log", lambda *args: 8)
+    monkeypatch.setattr(
+        market_collectors.store, "finish_log",
+        lambda log_id, status, detail="": finished.append((log_id, status, detail)),
+    )
+
+    result = market_collectors.collect_hot()
+
+    assert result["count"] == 2
+    assert result["errors"] == {"baidu": "来源暂不可用：返回空列表"}
+    assert [args[1] for args in saved] == ["em", "ths"]
+    assert finished[0][1] == "partial"
+    assert json.loads(finished[0][2])["errors"] == result["errors"]
