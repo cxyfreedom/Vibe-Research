@@ -47,7 +47,7 @@ export function Layout() {
   return (
     <div className="flex h-dvh min-w-0">
       {/* Mobile header */}
-      <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border/60 bg-background/90 px-3 backdrop-blur-xl md:hidden">
+      <header className="fixed inset-x-0 top-0 z-[80] flex h-14 items-center justify-between border-b border-border/60 bg-background/90 px-3 backdrop-blur-xl md:hidden">
         <Link to="/daily-review" className="flex min-w-0 items-center gap-2">
           <LineChart className="h-5 w-5 shrink-0 text-primary text-glow" />
           <span className="truncate text-base font-extrabold tracking-tight">
@@ -65,10 +65,10 @@ export function Layout() {
       </header>
 
       {mobileOpen && (
-        <button className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden" onClick={() => setMobileOpen(false)} aria-label="关闭导航遮罩" />
+        <button className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm md:hidden" onClick={() => setMobileOpen(false)} aria-label="关闭导航遮罩" />
       )}
       <aside className={cn(
-        "glass fixed inset-y-2 left-2 z-50 flex w-[min(18rem,calc(100vw-1rem))] flex-col rounded-2xl transition-transform duration-200 md:hidden",
+        "glass fixed inset-y-2 left-2 z-[110] flex w-[min(18rem,calc(100vw-1rem))] flex-col rounded-2xl transition-transform duration-200 md:hidden",
         mobileOpen ? "translate-x-0" : "-translate-x-[calc(100%+1rem)]",
       )}>
         <div className="flex items-center justify-between border-b border-border/50 p-4">
